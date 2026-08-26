@@ -17,16 +17,19 @@
 // ============ DEFINA O DECK DESTA PLACA ============
 // TX_DECK_ID: 1 = Deck A (deck 1), 2 = Deck B (deck 2)
 // Para gravar a placa do deck 2, mude para 2 e compile.
-#define TX_DECK_ID 1
+#define TX_DECK_ID 2
 // ===================================================
 #define DEFAULT_DECK_ID TX_DECK_ID
 uint8_t deckId = DEFAULT_DECK_ID;
 
-#define ESPNOW_CHANNEL 11
-#define USE_LONG_RANGE 0  // 1 = modo long range (1 Mbps), 0 = taxa normal (menos congestao)
+#define ESPNOW_CHANNEL 11  // apenas canal inicial/fallback; o pareamento descobre o canal do RX
+#define USE_LONG_RANGE 1  // 1 = modo long range (512/256 kbps, OBRIGATORIO ser igual ao RX), 0 = taxa normal
 #define SEND_RATE_HZ 150
 #define SEND_INTERVAL_US (1000000UL / SEND_RATE_HZ)
-#define HANDSHAKE_INTERVAL_MS 250
+// Pareamento por varredura: o TX pula pelos canais enviando HELLO ate o RX
+// (que fica fixo no canal mais limpo escolhido no boot dele) responder WELCOME.
+#define PAIR_CHANNEL_DWELL_MS 120  // tempo em cada canal antes de pular pro proximo
+#define PAIR_HELLO_INTERVAL_MS 40  // intervalo entre HELLOs dentro do mesmo canal
 #define HANDSHAKE_TIMEOUT_MS 3000
 
 #define PROTOCOL_VERSION 2
@@ -57,6 +60,16 @@ uint8_t deckId = DEFAULT_DECK_ID;
 
 uint8_t receiverMAC[] = { 0x14, 0xC1, 0x9F, 0x2C, 0xDE, 0x7C };
 
+// Canais varridos durante o pareamento (1..13, Brasil).
+// O TX pula por essa lista ate receber WELCOME do RX.
+static const uint8_t pairChannels[] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 };
+static const uint8_t pairChannelCount = sizeof(pairChannels) / sizeof(pairChannels[0]);
+uint8_t activeChannel = ESPNOW_CHANNEL;
+int16_t hopIndex = -1;  // -1 = ainda nao comecou a pular
+uint32_t lastHopMillis = 0;
+uint32_t lastPairHelloMillis = 0;
+bool wasReceiverReady = false;
+
 // Filtro assimetrico (fast attack / slow release):
 // - ALPHA_SLOW suaviza ruido durante giro estavel.
 // - ALPHA_FAST responde quase instantaneamente a paradas
@@ -64,9 +77,9 @@ uint8_t receiverMAC[] = { 0x14, 0xC1, 0x9F, 0x2C, 0xDE, 0x7C };
 // - FAST_THRESHOLD_RPM define o que conta como "transiente
 //   grande" (em RPM). Ajuste conforme o comportamento desejado:
 //   valores menores tornam o ataque rapido mais sensivel.
-float ALPHA_SLOW = 0.35f;
-float ALPHA_FAST = 0.70f;
-float FAST_THRESHOLD_RPM = 1.5f;
+float ALPHA_SLOW = 0.50f;
+float ALPHA_FAST = 0.85f;
+float FAST_THRESHOLD_RPM = 0.5f;
 float DEADZONE_RPM = 0.20f;
 // SENTIDO DO GIRO: depende de como o BMI270 esta MONTADO na placa.
 // - Se girando PARA FRENTE o painel/Serato mostra para TRAS: multiplique por -1.
@@ -112,7 +125,6 @@ float gyroOffsetZ = 0.0f; // em dps
 float filteredRPM = 0.0f;
 uint32_t sequenceNumber = 0;
 uint32_t nextSendMicros = 0;
-uint32_t lastHelloMillis = 0; // ultima vez que MSG_HELLO foi enviado
 volatile uint8_t batteryLevelPct = 100;
 uint32_t lastBattSampleMillis = 0;
 
@@ -279,7 +291,7 @@ void toggleDeck() {
   } else {
     receiverReady = false;
     lastReceiverReplyMillis = 0;
-    lastHelloMillis = 0;
+    hopIndex = -1;  // reinicia varredura de canais
     blinkOnboardLed(deckId == 1 ? 1 : 2);
     setOnboardLed(true);
     Serial.println(deckId == 1 ? "Deck: A" : "Deck: B");
@@ -326,7 +338,6 @@ void setupEspNow() {
   esp_err_t setErr = esp_wifi_set_max_tx_power(80); // potencia maxima de TX (20 dBm no C3)
   int8_t txPower = 0;
   esp_wifi_get_max_tx_power(&txPower); // retorna em unidades de 0,25 dBm
-  esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
 #if USE_LONG_RANGE
   esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_LR);
 #else
@@ -351,7 +362,7 @@ void setupEspNow() {
 
   esp_now_peer_info_t peerInfo = {};
   memcpy(peerInfo.peer_addr, receiverMAC, 6);
-  peerInfo.channel = ESPNOW_CHANNEL;
+  peerInfo.channel = activeChannel;  // placeholder; sera atualizado via esp_now_mod_peer apos pareamento
   peerInfo.encrypt = false;
 
   if (esp_now_add_peer(&peerInfo) != ESP_OK) {
@@ -404,10 +415,40 @@ void loop() {
     setOnboardLed((millis() / BATT_LOW_BLINK_MS) % 2);
   }
 
-  if (deckId != 0 && !receiverReady && (millis() - lastHelloMillis > HANDSHAKE_INTERVAL_MS)) {
-    sendControlMessage(MSG_HELLO);
-    lastHelloMillis = millis();
+  if (deckId != 0 && !receiverReady) {
+    // --- PAREAMENTO POR VARREDURA DE CANAIS ---
+    // Pula por 1..13 enviando HELLO em cada canal. Quando o RX responde
+    // WELCOME, o TX trava nesse canal. Funciona inclusive na reconexao
+    // apos perda de sinal (HANDSHAKE_TIMEOUT_MS abaixo).
+    uint32_t nowMs = millis();
+    if ((hopIndex < 0) || (nowMs - lastHopMillis >= PAIR_CHANNEL_DWELL_MS)) {
+      hopIndex = (int16_t)(((int32_t)hopIndex + 1) % (int32_t)pairChannelCount);
+      activeChannel = pairChannels[hopIndex];
+      esp_now_del_peer(receiverMAC);
+      esp_wifi_set_channel(activeChannel, WIFI_SECOND_CHAN_NONE);
+      esp_now_peer_info_t peerInfo = {};
+      memcpy(peerInfo.peer_addr, receiverMAC, 6);
+      peerInfo.channel = activeChannel;
+      peerInfo.encrypt = false;
+      esp_now_add_peer(&peerInfo);
+      lastHopMillis = nowMs;
+      lastPairHelloMillis = 0;  // forca HELLO imediato no novo canal
+      Serial.printf("PAIR: canal %u\n", activeChannel);
+    }
+    if (nowMs - lastPairHelloMillis >= PAIR_HELLO_INTERVAL_MS) {
+      sendControlMessage(MSG_HELLO);
+      lastPairHelloMillis = nowMs;
+    }
+  } else if (deckId != 0 && receiverReady && !wasReceiverReady) {
+    // --- PAREAMENTO CONCLUIDO: fixa o peer no canal correto ---
+    esp_now_peer_info_t peerUpdate = {};
+    memcpy(peerUpdate.peer_addr, receiverMAC, 6);
+    peerUpdate.channel = activeChannel;
+    peerUpdate.encrypt = false;
+    esp_now_mod_peer(&peerUpdate);
+    Serial.printf("PAIRED_ON_CH,%u\n", activeChannel);
   }
+  wasReceiverReady = (deckId != 0) && receiverReady;
 
   uint32_t now = micros();
   if (deckId == 0) return;
@@ -454,10 +495,13 @@ void loop() {
 
   esp_now_send(receiverMAC, (uint8_t *)&packet, sizeof(packet));
 
-  if (millis() - lastReceiverReplyMillis > HANDSHAKE_TIMEOUT_MS) {
+  if (wasReceiverReady && millis() - lastReceiverReplyMillis > HANDSHAKE_TIMEOUT_MS) {
     receiverReady = false;
+    wasReceiverReady = false;
     setOnboardLed(false);
     Serial.println("Receptor perdido, reconectando...");
     nextSendMicros = micros();
+    hopIndex = -1;  // reinicia varredura de canais
+    lastHopMillis = 0;
   }
 }

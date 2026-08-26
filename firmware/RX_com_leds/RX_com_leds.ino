@@ -34,8 +34,8 @@
 #define DAC_B_LRCK_PIN  14
 #define DAC_B_DATA_PIN  13
 
-#define ESPNOW_CHANNEL 11
-#define USE_LONG_RANGE 0  // 1 = modo long range (1 Mbps), 0 = taxa normal (menos congestao)
+#define ESPNOW_CHANNEL 11  // fallback: usado apenas se o scan de canais falhar
+#define USE_LONG_RANGE 1  // 1 = modo long range (512/256 kbps, OBRIGATORIO ser igual ao TX), 0 = taxa normal
 #define PROTOCOL_VERSION 2
 #define MSG_HELLO 1
 #define MSG_WELCOME 2
@@ -56,10 +56,10 @@
 #define BASE_RPM 33.333f
 #define DEADZONE_RPM 0.015f
 #define MAX_RPM_RATIO 3.0f
-#define RPM_SMOOTHING 0.25f
+#define RPM_SMOOTHING 0.45f
 #define OUTPUT_GAIN 0.70f
 #define CALIB_THRESHOLD_RPM 1.0f
-#define STOP_DEBOUNCE_MS 250
+#define STOP_DEBOUNCE_MS 100
 #define CALIB_STABLE_MS 200
 #define POSITION_RESET_MS 15000
 #define SIN_COS_TABLE_SIZE 1024
@@ -149,6 +149,9 @@ volatile esp_err_t lastI2sErr[2] = {ESP_OK, ESP_OK};
 // Pico de amostra (magnitude maxima) do ultimo buffer escrito por cada task.
 volatile uint32_t peakSample[2] = {0, 0};
 
+// Canal ESP-NOW em uso (definido pelo scan no boot; ESPNOW_CHANNEL e o fallback).
+uint8_t activeEspNowChannel = ESPNOW_CHANNEL;
+
 void buildSinCosTables() {
   for (int i = 0; i < SIN_COS_TABLE_SIZE; i++) {
     float angle = (float)i * 6.28318530718f / (float)SIN_COS_TABLE_SIZE;
@@ -173,7 +176,7 @@ static void setPackedBit(uint32_t index, uint8_t value) { uint32_t byteIndex = i
 static inline uint8_t getPackedBit(uint32_t index) { uint32_t byteIndex = index >> 3; uint8_t bitMask = (uint8_t)(1U << (index & 7)); return (cv02PackedBits[byteIndex] & bitMask) != 0; }
 void buildCv02Bits() { memset(cv02PackedBits, 0, sizeof(cv02PackedBits)); uint32_t code = CV02_SEED; for (uint32_t i = 0; i < CV02_LENGTH; i++) { setPackedBit(i, (uint8_t)(code & 0x1U)); code = lfsrForward(code); } }
 
-bool ensurePeer(const uint8_t *mac) { if (esp_now_is_peer_exist(mac)) return true; esp_now_peer_info_t peerInfo = {}; memcpy(peerInfo.peer_addr, mac, 6); peerInfo.channel = ESPNOW_CHANNEL; peerInfo.encrypt = false; return esp_now_add_peer(&peerInfo) == ESP_OK; }
+bool ensurePeer(const uint8_t *mac) { if (esp_now_is_peer_exist(mac)) return true; esp_now_peer_info_t peerInfo = {}; memcpy(peerInfo.peer_addr, mac, 6); peerInfo.channel = activeEspNowChannel; peerInfo.encrypt = false; return esp_now_add_peer(&peerInfo) == ESP_OK; }
 void sendControlMessage(const uint8_t *mac, uint8_t deckId, uint8_t msgType) { if (!ensurePeer(mac)) return; dvs_packet response = {}; response.msgType = msgType; response.version = PROTOCOL_VERSION; response.deckId = deckId; response.gyroRaw = (int16_t)RX_BOOT_ID; response.timestampMicros = micros(); esp_now_send(mac, (uint8_t *)&response, sizeof(response)); }
 
 void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *dataPtr, int len) {
@@ -182,18 +185,53 @@ void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *dataPtr, int len
   if (packet.version != PROTOCOL_VERSION || packet.deckId < 1 || packet.deckId > 2) return;
   const uint8_t *sourceMac = info->src_addr; uint8_t deckIndex = packet.deckId - 1; deck_state *state = &deckStates[deckIndex];
   int8_t rssi = (info->rx_ctrl != NULL) ? (int8_t)info->rx_ctrl->rssi : -127;
-  portENTER_CRITICAL_ISR(&stateMux); memcpy(state->mac, sourceMac, 6); state->lastSeenMillis = millis(); state->rssi = rssi; state->batteryPct = packet.batteryPct; portEXIT_CRITICAL_ISR(&stateMux);
-  if (packet.msgType == MSG_HELLO) { portENTER_CRITICAL_ISR(&stateMux); memcpy(pendingWelcomeMac[deckIndex], sourceMac, 6); pendingWelcomeDeck[deckIndex] = packet.deckId; hasPendingWelcome[deckIndex] = true; portEXIT_CRITICAL_ISR(&stateMux); return; }
+  portENTER_CRITICAL(&stateMux); memcpy(state->mac, sourceMac, 6); state->lastSeenMillis = millis(); state->rssi = rssi; state->batteryPct = packet.batteryPct; portEXIT_CRITICAL(&stateMux);
+  if (packet.msgType == MSG_HELLO) { portENTER_CRITICAL(&stateMux); memcpy(pendingWelcomeMac[deckIndex], sourceMac, 6); pendingWelcomeDeck[deckIndex] = packet.deckId; hasPendingWelcome[deckIndex] = true; portEXIT_CRITICAL(&stateMux); return; }
   if (packet.msgType != MSG_DATA) return;
-  uint16_t lost = 0; portENTER_CRITICAL_ISR(&stateMux); if (state->seen) { uint32_t seqDelta = packet.seq - state->lastSeq; if (seqDelta > 0) lost = (uint16_t)min(seqDelta - 1, 65535UL); } state->seen = true; state->rpmCenti = packet.rpmCenti; state->lastSeq = packet.seq; state->packetCount++; state->lostPackets = lost; portEXIT_CRITICAL_ISR(&stateMux);
+  uint16_t lost = 0; portENTER_CRITICAL(&stateMux); if (state->seen) { uint32_t seqDelta = packet.seq - state->lastSeq; if (seqDelta > 0) lost = (uint16_t)min(seqDelta - 1, 65535UL); } state->seen = true; state->rpmCenti = packet.rpmCenti; state->lastSeq = packet.seq; state->packetCount++; state->lostPackets = lost; portEXIT_CRITICAL(&stateMux);
 }
 
-void setupEspNow() { WiFi.mode(WIFI_STA); WiFi.setSleep(false); esp_wifi_set_max_tx_power(78); esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
+// Escaneia as redes 2.4 GHz vizinhas e escolhe o canal com menos APs fortes.
+// IMPORTANTE: rodar ANTES de ativar o modo Long Range — com WIFI_PROTOCOL_LR
+// puro o radio nao decodifica beacons padrao. Empates favorecem 1/6/11.
+void selectCleanChannel() {
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);
+  Serial.println("SCAN: buscando canal 2.4GHz mais limpo...");
+  int found = WiFi.scanNetworks();
+  if (found <= 0) {
+    Serial.println("SCAN: nenhuma rede encontrada, mantendo canal padrao");
+    Serial.printf("RF_CHANNEL,%d\n", activeEspNowChannel);
+    return;
+  }
+  float score[14] = {0};
+  for (int i = 0; i < found; i++) {
+    int ch = WiFi.channel(i);
+    int rssi = WiFi.RSSI(i);
+    if (ch < 1 || ch > 13) continue;
+    // AP forte perto pesa muito mais que AP distante.
+    float w = (rssi > -60) ? 4.0f : (rssi > -70) ? 2.0f : (rssi > -80) ? 1.0f : 0.3f;
+    score[ch] += w;
+  }
+  static const uint8_t prefOrder[13] = {1, 6, 11, 2, 7, 12, 3, 8, 13, 4, 9, 5, 10};
+  uint8_t best = ESPNOW_CHANNEL;
+  float bestScore = 1e9f;
+  for (int i = 0; i < 13; i++) {
+    uint8_t ch = prefOrder[i];
+    if (score[ch] < bestScore) { bestScore = score[ch]; best = ch; }
+  }
+  activeEspNowChannel = best;
+  Serial.printf("RF_CHANNEL,%d\n", activeEspNowChannel);
+}
+
+void setupEspNow() { esp_wifi_set_max_tx_power(78);
 #if USE_LONG_RANGE
   esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_LR);
 #else
   esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
 #endif
+  WiFi.setSleep(false);
+  esp_wifi_set_channel(activeEspNowChannel, WIFI_SECOND_CHAN_NONE);
   esp_now_init(); esp_now_register_recv_cb(OnDataRecv); }
 void setupI2S(audio_deck_state *deck, bool useApll) { i2s_config_t config = { .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX), .sample_rate = SAMPLE_RATE, .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT, .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT, .communication_format = I2S_COMM_FORMAT_STAND_I2S, .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1, .dma_buf_count = DMA_BUF_COUNT, .dma_buf_len = DMA_BUF_LEN, .use_apll = useApll, .tx_desc_auto_clear = true, .fixed_mclk = 0 }; i2s_pin_config_t pins = { .bck_io_num = deck->bckPin, .ws_io_num = deck->lrckPin, .data_out_num = deck->dataPin, .data_in_num = I2S_PIN_NO_CHANGE }; i2s_driver_install(deck->port, &config, 0, NULL); i2s_set_pin(deck->port, &pins); i2s_zero_dma_buffer(deck->port); }
 
@@ -351,6 +389,7 @@ void setup() {
   i2s_driver_uninstall(audioDecks[0].port);
   setupI2S(&audioDecks[0], false);
 #endif
+  selectCleanChannel();
   setupEspNow();
   // Reaplica o clock I2S nas duas portas apos o WiFi iniciar (PLL compartilhado).
   // IMPORTANTE: setar a porta 1 por ultimo corrompe o clock da porta 0 no ESP32-S3
