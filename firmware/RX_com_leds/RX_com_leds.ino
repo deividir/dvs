@@ -60,8 +60,6 @@
 #define OUTPUT_GAIN 0.70f
 #define CALIB_THRESHOLD_RPM 1.0f
 #define STOP_DEBOUNCE_MS 100
-#define CALIB_STABLE_MS 200
-#define POSITION_RESET_MS 15000
 #define SIN_COS_TABLE_SIZE 1024
 #define WRAP_GAP_MS 400
 
@@ -84,7 +82,9 @@
 #define CV02_SEED 0x59017UL
 #define CV02_TAPS 0x361e4UL
 #define CV02_LENGTH 712000UL
-#define CV02_START_CYCLE 12000UL
+// 0 = sem lead-in: a agulha no ponto inicial le o timecode no ciclo 0,
+// fazendo a musica comecar exatamente onde o stylus esta (sem deslocamento).
+#define CV02_START_CYCLE 0UL
 #define CV02_START_PHASE ((uint64_t)CV02_START_CYCLE << 16)
 #define CV02_PACKED_BYTES ((CV02_LENGTH + 7) / 8)
 
@@ -104,9 +104,11 @@ typedef struct {
   int16_t rpmCenti;
   uint32_t lastSeq;
   uint32_t lastSeenMillis;
+  uint32_t firstSeenMillis;
   uint32_t lastPingMillis;
   uint32_t packetCount;
-  uint16_t lostPackets;
+  uint32_t lostPackets;
+  uint16_t lastGap;
   uint8_t batteryPct;
   int8_t rssi;
   uint8_t mac[6];
@@ -188,7 +190,7 @@ void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *dataPtr, int len
   portENTER_CRITICAL(&stateMux); memcpy(state->mac, sourceMac, 6); state->lastSeenMillis = millis(); state->rssi = rssi; state->batteryPct = packet.batteryPct; portEXIT_CRITICAL(&stateMux);
   if (packet.msgType == MSG_HELLO) { portENTER_CRITICAL(&stateMux); memcpy(pendingWelcomeMac[deckIndex], sourceMac, 6); pendingWelcomeDeck[deckIndex] = packet.deckId; hasPendingWelcome[deckIndex] = true; portEXIT_CRITICAL(&stateMux); return; }
   if (packet.msgType != MSG_DATA) return;
-  uint16_t lost = 0; portENTER_CRITICAL(&stateMux); if (state->seen) { uint32_t seqDelta = packet.seq - state->lastSeq; if (seqDelta > 0) lost = (uint16_t)min(seqDelta - 1, 65535UL); } state->seen = true; state->rpmCenti = packet.rpmCenti; state->lastSeq = packet.seq; state->packetCount++; state->lostPackets = lost; portEXIT_CRITICAL(&stateMux);
+  uint16_t lost = 0; portENTER_CRITICAL(&stateMux); if (state->seen) { uint32_t seqDelta = packet.seq - state->lastSeq; if (seqDelta > 1) lost = (uint16_t)min(seqDelta - 1, 65535UL); } if (!state->seen) state->firstSeenMillis = millis(); state->seen = true; state->rpmCenti = packet.rpmCenti; state->lastSeq = packet.seq; state->packetCount++; state->lostPackets += lost; state->lastGap = lost; portEXIT_CRITICAL(&stateMux);
 }
 
 // Escaneia as redes 2.4 GHz vizinhas e escolhe o canal com menos APs fortes.
@@ -224,7 +226,7 @@ void selectCleanChannel() {
   Serial.printf("RF_CHANNEL,%d\n", activeEspNowChannel);
 }
 
-void setupEspNow() { esp_wifi_set_max_tx_power(78);
+void setupEspNow() { esp_wifi_set_max_tx_power(80);
 #if USE_LONG_RANGE
   esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_LR);
 #else
@@ -263,8 +265,7 @@ void audioTask(void *param) { audio_deck_state *deck = (audio_deck_state *)param
     }
     if (stopped) {
       deck->calibrating = true;
-      if (deck->calibStableStart == 0) deck->calibStableStart = millis();
-      if (millis() - deck->calibStableStart >= POSITION_RESET_MS) { deck->cv02Phase64 = CV02_START_PHASE; }
+      deck->calibStableStart = 0;
       deck->filteredRpm = 0.0f;
     } else {
       deck->calibStableStart = 0;
@@ -310,6 +311,21 @@ void handleSerialCommand() {
         audioDecks[0].testToneUntil = 0;
         audioDecks[1].testToneUntil = 0;
         Serial.println("TEST_OFF");
+      } else if (cmdLine.startsWith("UPTIME")) {
+        uint32_t upMillis = millis();
+        for (uint8_t d = 0; d < 2; d++) {
+          if (deckStates[d].firstSeenMillis != 0) {
+            uint32_t upSec = (upMillis - deckStates[d].firstSeenMillis) / 1000;
+            uint32_t h = upSec / 3600;
+            uint32_t m = (upSec % 3600) / 60;
+            uint32_t s = upSec % 60;
+            if (h > 0) Serial.printf("UPTIME deck%d=%luh%lum%lus\n", d + 1, (unsigned long)h, (unsigned long)m, (unsigned long)s);
+            else if (m > 0) Serial.printf("UPTIME deck%d=%lum%lus\n", d + 1, (unsigned long)m, (unsigned long)s);
+            else Serial.printf("UPTIME deck%d=%lus\n", d + 1, (unsigned long)s);
+          } else {
+            Serial.printf("UPTIME deck%d=off\n", d + 1);
+          }
+        }
       }
       cmdLine = "";
     } else if (c != '\r') {
@@ -328,7 +344,7 @@ void updateDeckLed(uint8_t deckIndex, uint8_t pin) {
   seen = deckStates[deckIndex].seen;
   lastSeenMillis = deckStates[deckIndex].lastSeenMillis;
   rssi = deckStates[deckIndex].rssi;
-  lost = deckStates[deckIndex].lostPackets;
+  lost = deckStates[deckIndex].lastGap;
   portEXIT_CRITICAL(&stateMux);
 
   uint32_t now = millis();
@@ -356,12 +372,12 @@ void sendTelemetry() {
     wrDelta[i] = audioWriteCount[i] - prevWriteCount[i];
     prevWriteCount[i] = audioWriteCount[i];
   }
-  Serial.printf("TELEM,%lu,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%lu,%lu,%lu,%lu,%lu,%lu,%d,%d,%d,%d,%lu,%lu\n",
+  Serial.printf("TELEM,%lu,%d,%d,%d,%d,%lu,%d,%d,%d,%d,%lu,%lu,%lu,%lu,%lu,%lu,%d,%d,%d,%d,%lu,%lu\n",
     (unsigned long)now,
     (local[0].lastSeenMillis != 0 && now - local[0].lastSeenMillis <= DECK_TIMEOUT_MS) ? 1 : 0,
-    (int)local[0].rssi, (int)local[0].batteryPct, (int)local[0].rpmCenti, (int)local[0].lostPackets,
+    (int)local[0].rssi, (int)local[0].batteryPct, (int)local[0].rpmCenti, (unsigned long)local[0].lostPackets,
     (local[1].lastSeenMillis != 0 && now - local[1].lastSeenMillis <= DECK_TIMEOUT_MS) ? 1 : 0,
-    (int)local[1].rssi, (int)local[1].batteryPct, (int)local[1].rpmCenti, (int)local[1].lostPackets,
+    (int)local[1].rssi, (int)local[1].batteryPct, (int)local[1].rpmCenti, (unsigned long)local[1].lostPackets,
     (unsigned long)((audioDecks[0].cv02Phase64 >> 16) / 1000ULL),
     (unsigned long)((audioDecks[1].cv02Phase64 >> 16) / 1000ULL),
     (local[0].seen ? (unsigned long)(now - local[0].lastSeenMillis) : 0UL),

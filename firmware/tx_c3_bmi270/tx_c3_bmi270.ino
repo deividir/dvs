@@ -51,7 +51,13 @@ uint8_t deckId = DEFAULT_DECK_ID;
 // BATT_FULL/EMPTY_MV sao as tensoes no PINO: 4.2V cheio -> 2.10V,
 // 3.3V vazio -> 1.65V. Deixe BATT_PIN -1 se nao houver divisor.
 #define BATT_PIN 3
-#define BATT_FULL_MV 2100
+// Calibracao individual por deck (variacao de hardware/ADC):
+// deck A chega a 100% com ~2042mV no pino; deck B com ~2050mV.
+#if TX_DECK_ID == 1
+#define BATT_FULL_MV 2040
+#else
+#define BATT_FULL_MV 2050
+#endif
 #define BATT_EMPTY_MV 1650
 #define BATT_SAMPLE_MS 2000
 #define BATT_AVG_SAMPLES 8
@@ -85,7 +91,16 @@ float DEADZONE_RPM = 0.20f;
 // - Se girando PARA FRENTE o painel/Serato mostra para TRAS: multiplique por -1.
 // - Se girando PARA FRENTE mostra para frente: deixe em +1.
 // (esta placa atual le como o M5Stick: +1)
-float RPM_MULTIPLIER = 0.994f;
+// Calibracao individual por deck (variacao do scale do giroscopio):
+// 1.003 resultou em offset constante +0.4% (0%->+0.4, +8%->+8.4, -8%->-7.6).
+// 0.999 anula esse offset: 0%->0.0, +8%->+8.0, -8%->-8.0 no Serato.
+// Ajustar apos teste se ainda desviar.
+// Calibracao deck 2 (TX_DECK_ID 2)
+#if TX_DECK_ID == 2
+#define RPM_MULTIPLIER 0.9974f
+#else
+#define RPM_MULTIPLIER 0.999f
+#endif
 
 // Auto-calibracao: o transmissor espera uma janela de gyro
 // estavel com o toca-discos parado. Se houver movimento, a
