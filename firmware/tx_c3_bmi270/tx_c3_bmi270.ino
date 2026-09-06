@@ -10,6 +10,8 @@
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
+#include <esp_sleep.h>
+#include <Preferences.h>
 #include <Wire.h>
 #include <math.h>
 #include "SparkFun_BMI270_Arduino_Library.h"
@@ -23,20 +25,32 @@
 uint8_t deckId = DEFAULT_DECK_ID;
 
 #define ESPNOW_CHANNEL 11  // apenas canal inicial/fallback; o pareamento descobre o canal do RX
-#define USE_LONG_RANGE 1  // 1 = modo long range (512/256 kbps, OBRIGATORIO ser igual ao RX), 0 = taxa normal
+#define USE_LONG_RANGE 0  // 0 = taxa normal (1Mbit, robusto em canal cheio), 1 = long range (OBRIGATORIO ser igual ao RX)
 #define SEND_RATE_HZ 150
 #define SEND_INTERVAL_US (1000000UL / SEND_RATE_HZ)
 // Pareamento por varredura: o TX pula pelos canais enviando HELLO ate o RX
 // (que fica fixo no canal mais limpo escolhido no boot dele) responder WELCOME.
 #define PAIR_CHANNEL_DWELL_MS 120  // tempo em cada canal antes de pular pro proximo
 #define PAIR_HELLO_INTERVAL_MS 40  // intervalo entre HELLOs dentro do mesmo canal
-#define HANDSHAKE_TIMEOUT_MS 3000
+#define HANDSHAKE_TIMEOUT_MS 5000
 
 #define PROTOCOL_VERSION 2
+
+// Desligamento automatico por inatividade (economia de bateria).
+// Se o prato ficar parado (sem movimento medido no giroscopio) por
+// IDLE_POWER_OFF_MS, o TX entra em deep sleep (REGULADOR AMS1117 da
+// placa consome ~5mA mesmo dormindo; ~8 dias em 1000mAh).
+// Wake: o botao RESET do board (pino EN) religa de qualquer estado.
+#define IDLE_POWER_OFF_MS 600000UL   // 10 minutos sem movimento
+#define IDLE_MOTION_DPS 2.0f         // abaixo disso (dps ja corrigido) = parado
+#define IDLE_CHECK_MS 1000           // checa uma vez por segundo
+
 #define MSG_HELLO 1
 #define MSG_WELCOME 2
 #define MSG_DATA 3
 #define MSG_PING 4
+#define MSG_CALIB 5
+#define MSG_CALIB_ACK 6
 
 // LED onboard azul do ESP32-C3 Super Mini (ativo em LOW).
 // Feedback de estado: Sem Deck = 3 piscadas, Deck A = 1, Deck B = 2.
@@ -53,7 +67,7 @@ uint8_t deckId = DEFAULT_DECK_ID;
 #define BATT_PIN 3
 // Calibracao individual por deck (variacao de hardware/ADC):
 // deck A chega a 100% com ~2042mV no pino; deck B com ~2050mV.
-#if TX_DECK_ID == 1
+#if TX_DECK_ID == 2
 #define BATT_FULL_MV 2040
 #else
 #define BATT_FULL_MV 2050
@@ -75,6 +89,8 @@ int16_t hopIndex = -1;  // -1 = ainda nao comecou a pular
 uint32_t lastHopMillis = 0;
 uint32_t lastPairHelloMillis = 0;
 bool wasReceiverReady = false;
+uint32_t lastMotionMillis = 0;
+uint32_t lastIdleCheckMillis = 0;
 
 // Filtro assimetrico (fast attack / slow release):
 // - ALPHA_SLOW suaviza ruido durante giro estavel.
@@ -101,6 +117,29 @@ float DEADZONE_RPM = 0.20f;
 #else
 #define RPM_MULTIPLIER 0.999f
 #endif
+
+// Multiplicador de velocidade em runtime: vem do #define acima como default,
+// mas pode ser reescrito sem fio (MSG_CALIB via ESP-NOW) e e salvo em NVS
+// (Preferences) para persistir entre boots. Assim nao precisa reaplicar firmware
+// com cabo a cada calibracao do pitch.
+float rpmMultiplier = RPM_MULTIPLIER;
+
+void loadRpmMultiplierNvs() {
+  Preferences prefs;
+  if (prefs.begin("dvs", true)) {
+    float saved = prefs.getFloat("rpmMult", -1.0f);
+    if (saved > 0.5f && saved < 2.0f) rpmMultiplier = saved;
+    prefs.end();
+  }
+}
+
+void saveRpmMultiplierNvs() {
+  Preferences prefs;
+  if (prefs.begin("dvs", false)) {
+    prefs.putFloat("rpmMult", rpmMultiplier);
+    prefs.end();
+  }
+}
 
 // Auto-calibracao: o transmissor espera uma janela de gyro
 // estavel com o toca-discos parado. Se houver movimento, a
@@ -242,7 +281,7 @@ void autoCalibrateGyroZ() {
 
 static inline float dpsToRPM(float dps) {
   float corrected = dps - gyroOffsetZ;
-  float rpm = -(corrected / 6.0f) * RPM_MULTIPLIER;
+  float rpm = -(corrected / 6.0f) * rpmMultiplier;
   return rpm;
 }
 
@@ -270,6 +309,30 @@ void autoTrimGyroOffset(float dps) {
     }
     wMin = 1e9f; wMax = -1e9f; wSum = 0.0f; wCount = 0;
     windowStart = millis();
+  }
+}
+
+// Entra em deep sleep. Wake sera via botao RESET do board (pino EN),
+// que religa de qualquer estado (power-on reset fisico, sem software).
+void enterDeepSleep() {
+  Serial.println("OCIOSO: desligando (deep sleep)...");
+  setOnboardLed(false);
+  esp_deep_sleep_start();
+}
+
+// Desliga automaticamente se nao houver movimento por IDLE_POWER_OFF_MS.
+void checkIdlePowerOff() {
+  uint32_t now = millis();
+  if (now - lastIdleCheckMillis < IDLE_CHECK_MS) return;
+  lastIdleCheckMillis = now;
+  float dps = 0.0f;
+  if (!readGyroZDps(&dps)) return;
+  if (fabsf(dps - gyroOffsetZ) > IDLE_MOTION_DPS) {
+    lastMotionMillis = now;
+    return;
+  }
+  if (now - lastMotionMillis >= IDLE_POWER_OFF_MS) {
+    enterDeepSleep();
   }
 }
 
@@ -341,6 +404,21 @@ void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *dataPtr, int len
     receiverReady = true;
     lastReceiverReplyMillis = millis();
     setOnboardLed(true);
+  } else if (incoming.msgType == MSG_CALIB) {
+    float newMult = (float)incoming.rpmCenti / 10000.0f;
+    if (newMult > 0.5f && newMult < 2.0f) {
+      rpmMultiplier = newMult;
+      saveRpmMultiplierNvs();
+      Serial.printf("CALIB_OK,M=%f\n", rpmMultiplier);
+      // Confirma por radio para o RX (que encaminha ao dashboard).
+      dvs_packet ack = {};
+      ack.msgType = MSG_CALIB_ACK;
+      ack.version = PROTOCOL_VERSION;
+      ack.deckId = deckId;
+      ack.rpmCenti = (int16_t)lroundf(rpmMultiplier * 10000.0f);
+      ack.timestampMicros = micros();
+      esp_now_send(receiverMAC, (uint8_t *)&ack, sizeof(ack));
+    }
   }
 }
 
@@ -401,6 +479,9 @@ void sendControlMessage(uint8_t msgType) {
 }
 
 void setup() {
+  setupLED();
+  pinMode(BOOT_BUTTON_PIN, INPUT_PULLUP);
+
   Serial.begin(115200);
   delay(1000);
   Serial.println();
@@ -408,11 +489,12 @@ void setup() {
   Serial.println("BMI270 ESP-NOW TRANSMISSOR (S3)");
   Serial.println("================================");
 
-  setupLED();
 #if BATT_PIN >= 0
   analogSetPinAttenuation(BATT_PIN, ADC_11db);
 #endif
+  loadRpmMultiplierNvs();
   setupBMI270();
+  Serial.printf("RPM_MULTIPLIER_ATIVO=%.4f\n", rpmMultiplier);
   setupEspNow();
   autoCalibrateGyroZ();
   setOnboardLed(false);
@@ -421,6 +503,9 @@ void setup() {
 }
 
 void loop() {
+  // Desligamento por inatividade (antes de qualquer guard, vale em todos os estados).
+  checkIdlePowerOff();
+
   handleBootButton();
 
   // Bateria: amostra periodica + alerta no LED azul (pisca sem parar).

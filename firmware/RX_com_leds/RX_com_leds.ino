@@ -35,14 +35,16 @@
 #define DAC_B_DATA_PIN  13
 
 #define ESPNOW_CHANNEL 11  // fallback: usado apenas se o scan de canais falhar
-#define USE_LONG_RANGE 1  // 1 = modo long range (512/256 kbps, OBRIGATORIO ser igual ao TX), 0 = taxa normal
+#define USE_LONG_RANGE 0  // 0 = taxa normal (1Mbit, robusto em canal cheio), 1 = long range (OBRIGATORIO ser igual ao TX)
 #define PROTOCOL_VERSION 2
 #define MSG_HELLO 1
 #define MSG_WELCOME 2
 #define MSG_DATA 3
 #define MSG_PING 4
+#define MSG_CALIB 5
+#define MSG_CALIB_ACK 6
 #define PING_INTERVAL_MS 500
-#define DECK_TIMEOUT_MS 1500
+#define DECK_TIMEOUT_MS 2500
 #define RX_BOOT_ID 0x5A
 
 #define DEBUG_SERIAL 1
@@ -181,6 +183,31 @@ void buildCv02Bits() { memset(cv02PackedBits, 0, sizeof(cv02PackedBits)); uint32
 bool ensurePeer(const uint8_t *mac) { if (esp_now_is_peer_exist(mac)) return true; esp_now_peer_info_t peerInfo = {}; memcpy(peerInfo.peer_addr, mac, 6); peerInfo.channel = activeEspNowChannel; peerInfo.encrypt = false; return esp_now_add_peer(&peerInfo) == ESP_OK; }
 void sendControlMessage(const uint8_t *mac, uint8_t deckId, uint8_t msgType) { if (!ensurePeer(mac)) return; dvs_packet response = {}; response.msgType = msgType; response.version = PROTOCOL_VERSION; response.deckId = deckId; response.gyroRaw = (int16_t)RX_BOOT_ID; response.timestampMicros = micros(); esp_now_send(mac, (uint8_t *)&response, sizeof(response)); }
 
+// Envia o novo RPM_MULTIPLIER de um deck para o TX correspondente via ESP-NOW.
+// O valor vai no campo rpmCenti escalado por 10000 (ex.: 0.9990 -> 9990).
+void sendCalibCommand(uint8_t deckId, float multiplier) {
+  if (deckId < 1 || deckId > 2) return;
+  uint8_t deckIndex = deckId - 1;
+  uint8_t macCopy[6];
+  portENTER_CRITICAL(&stateMux);
+  if (deckStates[deckIndex].lastSeenMillis == 0) { portEXIT_CRITICAL(&stateMux); Serial.println("CALIB_ERR: deck sem sinal"); return; }
+  memcpy(macCopy, deckStates[deckIndex].mac, 6);
+  portEXIT_CRITICAL(&stateMux);
+  if (!ensurePeer(macCopy)) return;
+  dvs_packet calib = {};
+  calib.msgType = MSG_CALIB;
+  calib.version = PROTOCOL_VERSION;
+  calib.deckId = deckId;
+  calib.rpmCenti = (int16_t)lroundf(multiplier * 10000.0f);
+  calib.timestampMicros = micros();
+  // ESP-NOW e sem conexao: envia 3x para reduzir perda por colisao/ruido.
+  for (int i = 0; i < 3; i++) {
+    esp_now_send(macCopy, (uint8_t *)&calib, sizeof(calib));
+    delay(20);
+  }
+  Serial.printf("CALIB_SENT deck=%d M=%.4f\n", deckId, multiplier);
+}
+
 void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *dataPtr, int len) {
   if (len != sizeof(dvs_packet)) return;
   dvs_packet packet; memcpy(&packet, dataPtr, sizeof(packet));
@@ -189,6 +216,7 @@ void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *dataPtr, int len
   int8_t rssi = (info->rx_ctrl != NULL) ? (int8_t)info->rx_ctrl->rssi : -127;
   portENTER_CRITICAL(&stateMux); memcpy(state->mac, sourceMac, 6); state->lastSeenMillis = millis(); state->rssi = rssi; state->batteryPct = packet.batteryPct; portEXIT_CRITICAL(&stateMux);
   if (packet.msgType == MSG_HELLO) { portENTER_CRITICAL(&stateMux); memcpy(pendingWelcomeMac[deckIndex], sourceMac, 6); pendingWelcomeDeck[deckIndex] = packet.deckId; hasPendingWelcome[deckIndex] = true; portEXIT_CRITICAL(&stateMux); return; }
+  if (packet.msgType == MSG_CALIB_ACK) { Serial.printf("CALIB_ACK deck=%d M=%.4f\n", packet.deckId, (float)packet.rpmCenti / 10000.0f); return; }
   if (packet.msgType != MSG_DATA) return;
   uint16_t lost = 0; portENTER_CRITICAL(&stateMux); if (state->seen) { uint32_t seqDelta = packet.seq - state->lastSeq; if (seqDelta > 1) lost = (uint16_t)min(seqDelta - 1, 65535UL); } if (!state->seen) state->firstSeenMillis = millis(); state->seen = true; state->rpmCenti = packet.rpmCenti; state->lastSeq = packet.seq; state->packetCount++; state->lostPackets += lost; state->lastGap = lost; portEXIT_CRITICAL(&stateMux);
 }
@@ -215,7 +243,7 @@ void selectCleanChannel() {
     float w = (rssi > -60) ? 4.0f : (rssi > -70) ? 2.0f : (rssi > -80) ? 1.0f : 0.3f;
     score[ch] += w;
   }
-  static const uint8_t prefOrder[13] = {1, 6, 11, 2, 7, 12, 3, 8, 13, 4, 9, 5, 10};
+  static const uint8_t prefOrder[13] = {12, 13, 1, 6, 11, 2, 7, 3, 8, 4, 9, 5, 10};
   uint8_t best = ESPNOW_CHANNEL;
   float bestScore = 1e9f;
   for (int i = 0; i < 13; i++) {
@@ -325,6 +353,36 @@ void handleSerialCommand() {
           } else {
             Serial.printf("UPTIME deck%d=off\n", d + 1);
           }
+        }
+      } else if (cmdLine.startsWith("CALIB_A") || cmdLine.startsWith("CALIB_B")) {
+        float mult = cmdLine.substring(7).toFloat();
+        if (mult > 0.5f && mult < 2.0f) {
+          uint8_t deck = cmdLine.startsWith("CALIB_A") ? 1 : 2;
+          sendCalibCommand(deck, mult);
+        } else {
+          Serial.println("CALIB_ERR: valor invalido (use M entre 0.5 e 2.0)");
+        }
+      } else if (cmdLine.startsWith("CHANNEL")) {
+        int ch = cmdLine.substring(8).toInt();
+        if (ch >= 1 && ch <= 13) {
+          activeEspNowChannel = (uint8_t)ch;
+          esp_wifi_set_channel(activeEspNowChannel, WIFI_SECOND_CHAN_NONE);
+          for (uint8_t d = 0; d < 2; d++) {
+            uint8_t macCopy[6];
+            portENTER_CRITICAL(&stateMux);
+            memcpy(macCopy, deckStates[d].mac, 6);
+            portEXIT_CRITICAL(&stateMux);
+            if (esp_now_is_peer_exist(macCopy)) {
+              esp_now_peer_info_t p = {};
+              memcpy(p.peer_addr, macCopy, 6);
+              p.channel = activeEspNowChannel;
+              p.encrypt = false;
+              esp_now_mod_peer(&p);
+            }
+          }
+          Serial.printf("RF_CHANNEL,%d\n", activeEspNowChannel);
+        } else {
+          Serial.println("CHANNEL_ERR: use 1-13");
         }
       }
       cmdLine = "";
