@@ -19,14 +19,14 @@
 // ============ DEFINA O DECK DESTA PLACA ============
 // TX_DECK_ID: 1 = Deck A (deck 1), 2 = Deck B (deck 2)
 // Para gravar a placa do deck 2, mude para 2 e compile.
-#define TX_DECK_ID 2
+#define TX_DECK_ID 1
 // ===================================================
 #define DEFAULT_DECK_ID TX_DECK_ID
 uint8_t deckId = DEFAULT_DECK_ID;
 
 #define ESPNOW_CHANNEL 11  // apenas canal inicial/fallback; o pareamento descobre o canal do RX
 #define USE_LONG_RANGE 0  // 0 = taxa normal (1Mbit, robusto em canal cheio), 1 = long range (OBRIGATORIO ser igual ao RX)
-#define SEND_RATE_HZ 150
+#define SEND_RATE_HZ 200
 #define SEND_INTERVAL_US (1000000UL / SEND_RATE_HZ)
 // Pareamento por varredura: o TX pula pelos canais enviando HELLO ate o RX
 // (que fica fixo no canal mais limpo escolhido no boot dele) responder WELCOME.
@@ -51,6 +51,14 @@ uint8_t deckId = DEFAULT_DECK_ID;
 #define MSG_PING 4
 #define MSG_CALIB 5
 #define MSG_CALIB_ACK 6
+#define MSG_SET_PARAM 7
+#define MSG_CFG_ACK 8
+
+// Configuraveis remotamente pelo RX (campo batteryPct do pacote = id do parametro).
+#define CFG_DECK_ID 1
+#define CFG_ALPHA_SLOW 2
+#define CFG_ALPHA_FAST 3
+#define CFG_FAST_THRESHOLD 4
 
 // LED onboard azul do ESP32-C3 Super Mini (ativo em LOW).
 // Feedback de estado: Sem Deck = 3 piscadas, Deck A = 1, Deck B = 2.
@@ -99,9 +107,9 @@ uint32_t lastIdleCheckMillis = 0;
 // - FAST_THRESHOLD_RPM define o que conta como "transiente
 //   grande" (em RPM). Ajuste conforme o comportamento desejado:
 //   valores menores tornam o ataque rapido mais sensivel.
-float ALPHA_SLOW = 0.50f;
+float ALPHA_SLOW = 0.75f;
 float ALPHA_FAST = 0.85f;
-float FAST_THRESHOLD_RPM = 0.5f;
+float FAST_THRESHOLD_RPM = 0.3f;
 float DEADZONE_RPM = 0.20f;
 // SENTIDO DO GIRO: depende de como o BMI270 esta MONTADO na placa.
 // - Se girando PARA FRENTE o painel/Serato mostra para TRAS: multiplique por -1.
@@ -141,6 +149,49 @@ void saveRpmMultiplierNvs() {
   }
 }
 
+// Deck e filtros configuráveis remotamente (MSG_SET_PARAM via ESP-NOW) e salvos
+// em NVS, para nao precisar reabrir o TX/cabo para ajustar.
+void loadDeckIdNvs() {
+  Preferences prefs;
+  if (prefs.begin("dvs", true)) {
+    uint8_t saved = prefs.getUChar("deckId", 0);
+    if (saved == 1 || saved == 2) deckId = saved;
+    prefs.end();
+  }
+}
+
+void saveDeckIdNvs() {
+  if (deckId != 1 && deckId != 2) return;
+  Preferences prefs;
+  if (prefs.begin("dvs", false)) {
+    prefs.putUChar("deckId", deckId);
+    prefs.end();
+  }
+}
+
+void loadFilterNvs() {
+  Preferences prefs;
+  if (prefs.begin("dvs", true)) {
+    float s = prefs.getFloat("alphaSlow", -1.0f);
+    float f = prefs.getFloat("alphaFast", -1.0f);
+    float t = prefs.getFloat("alphaThr", -1.0f);
+    if (s > 0.05f && s < 0.99f) ALPHA_SLOW = s;
+    if (f > 0.05f && f < 0.99f) ALPHA_FAST = f;
+    if (t > 0.01f && t < 10.0f) FAST_THRESHOLD_RPM = t;
+    prefs.end();
+  }
+}
+
+void saveFilterNvs() {
+  Preferences prefs;
+  if (prefs.begin("dvs", false)) {
+    prefs.putFloat("alphaSlow", ALPHA_SLOW);
+    prefs.putFloat("alphaFast", ALPHA_FAST);
+    prefs.putFloat("alphaThr", FAST_THRESHOLD_RPM);
+    prefs.end();
+  }
+}
+
 // Auto-calibracao: o transmissor espera uma janela de gyro
 // estavel com o toca-discos parado. Se houver movimento, a
 // janela reinicia para nao gravar offset durante o giro.
@@ -172,6 +223,19 @@ dvs_packet packet;
 
 volatile bool receiverReady = false;
 volatile uint32_t lastReceiverReplyMillis = 0;
+
+void setDeck(uint8_t newId) {
+  if (newId != 1 && newId != 2) return;
+  if (newId == deckId) return;
+  deckId = newId;
+  receiverReady = false;
+  lastReceiverReplyMillis = 0;
+  hopIndex = -1;   // reinicia varredura de canais
+  lastHopMillis = 0;
+  lastPairHelloMillis = 0;
+  saveDeckIdNvs();
+  Serial.printf("DECKID_OK,id=%u\n", deckId);
+}
 
 BMI270 imu;
 
@@ -221,6 +285,11 @@ void setupBMI270() {
   }
 
   Serial.println("BMI270 conectado!");
+  // ODR do giroscopio acima da taxa de envio para o dado sempre estar fresco
+  // (2.5ms max de idade); com o default 200Hz e envio a 200Hz a amostra podia
+  // repetir ou chegar velha, adicionando latencia a resposta do movimento.
+  int8_t odrErr = imu.setGyroODR(BMI2_GYR_ODR_400HZ);
+  if (odrErr != BMI2_OK) Serial.printf("AVISO: falha ao setar ODR 400Hz (err=%d)\n", odrErr);
 }
 
 static inline bool readGyroZDps(float *dps) {
@@ -419,6 +488,42 @@ void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *dataPtr, int len
       ack.timestampMicros = micros();
       esp_now_send(receiverMAC, (uint8_t *)&ack, sizeof(ack));
     }
+  } else if (incoming.msgType == MSG_SET_PARAM) {
+    int16_t v = incoming.rpmCenti;
+    switch (incoming.batteryPct) {
+      case CFG_DECK_ID:
+        setDeck((uint8_t)v);
+        break;
+      case CFG_ALPHA_SLOW: {
+        float f = (float)v / 1000.0f;
+        if (f > 0.05f && f < 0.99f) { ALPHA_SLOW = f; saveFilterNvs(); Serial.printf("FILTER_SLOW,%f\n", ALPHA_SLOW); }
+        else return;
+        break;
+      }
+      case CFG_ALPHA_FAST: {
+        float f = (float)v / 1000.0f;
+        if (f > 0.05f && f < 0.99f) { ALPHA_FAST = f; saveFilterNvs(); Serial.printf("FILTER_FAST,%f\n", ALPHA_FAST); }
+        else return;
+        break;
+      }
+      case CFG_FAST_THRESHOLD: {
+        float f = (float)v / 1000.0f;
+        if (f > 0.01f && f < 10.0f) { FAST_THRESHOLD_RPM = f; saveFilterNvs(); Serial.printf("FILTER_THRESH,%f\n", FAST_THRESHOLD_RPM); }
+        else return;
+        break;
+      }
+      default:
+        return;
+    }
+    // Confirma por radio para o RX (que encaminha ao serial/dashboard).
+    dvs_packet ack = {};
+    ack.msgType = MSG_CFG_ACK;
+    ack.version = PROTOCOL_VERSION;
+    ack.deckId = deckId;
+    ack.batteryPct = incoming.batteryPct;
+    ack.rpmCenti = incoming.rpmCenti;
+    ack.timestampMicros = micros();
+    esp_now_send(receiverMAC, (uint8_t *)&ack, sizeof(ack));
   }
 }
 
@@ -492,13 +597,16 @@ void setup() {
 #if BATT_PIN >= 0
   analogSetPinAttenuation(BATT_PIN, ADC_11db);
 #endif
+  loadDeckIdNvs();
+  loadFilterNvs();
   loadRpmMultiplierNvs();
   setupBMI270();
   Serial.printf("RPM_MULTIPLIER_ATIVO=%.4f\n", rpmMultiplier);
+  Serial.printf("FILTERS_ATIVOS slow=%.3f fast=%.3f thr=%.3f\n", ALPHA_SLOW, ALPHA_FAST, FAST_THRESHOLD_RPM);
   setupEspNow();
   autoCalibrateGyroZ();
   setOnboardLed(false);
-  blinkOnboardLed(1); // anuncia: Deck A
+  blinkOnboardLed(deckId == 1 ? 1 : 2); // anuncia: Deck A ou B (NVS pode sobrepor o define)
   nextSendMicros = micros();
 }
 

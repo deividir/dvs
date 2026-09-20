@@ -13,6 +13,7 @@
 #include <esp_wifi.h>
 #include <driver/i2s.h>
 #include <math.h>
+#include <Preferences.h>
 
 // --- PINOS DOS LEDs ---
 #define LED_DECK_A 4
@@ -43,6 +44,12 @@
 #define MSG_PING 4
 #define MSG_CALIB 5
 #define MSG_CALIB_ACK 6
+#define MSG_SET_PARAM 7
+#define MSG_CFG_ACK 8
+#define CFG_DECK_ID 1
+#define CFG_ALPHA_SLOW 2
+#define CFG_ALPHA_FAST 3
+#define CFG_FAST_THRESHOLD 4
 #define PING_INTERVAL_MS 500
 #define DECK_TIMEOUT_MS 2500
 #define RX_BOOT_ID 0x5A
@@ -53,12 +60,16 @@
 
 #define SAMPLE_RATE 44100
 #define DMA_BUF_LEN 32
-#define DMA_BUF_COUNT 4
+#define DMA_BUF_COUNT 6
+// Gap Maximo de escritas I2S sem underrun obrigatorio do DAC:
+// = capacidade total do ring DMA (DMA_BUF_COUNT x DMA_BUF_LEN frames).
+#define UNDERFLOW_GAP_US ((uint32_t)((uint32_t)DMA_BUF_COUNT * DMA_BUF_LEN * 1000000UL / SAMPLE_RATE))
+#define DMA_TOTAL_FRAMES ((uint32_t)DMA_BUF_COUNT * DMA_BUF_LEN)
 
 #define BASE_RPM 33.333f
 #define DEADZONE_RPM 0.015f
 #define MAX_RPM_RATIO 3.0f
-#define RPM_SMOOTHING 0.45f
+#define RPM_SMOOTHING 0.6f
 #define OUTPUT_GAIN 0.70f
 #define CALIB_THRESHOLD_RPM 1.0f
 #define STOP_DEBOUNCE_MS 100
@@ -111,6 +122,8 @@ typedef struct {
   uint32_t packetCount;
   uint32_t lostPackets;
   uint16_t lastGap;
+  uint32_t winReceived;
+  uint32_t winMissed;
   uint8_t batteryPct;
   int8_t rssi;
   uint8_t mac[6];
@@ -152,6 +165,15 @@ volatile uint32_t audioWriteCount[2] = {0, 0};
 volatile esp_err_t lastI2sErr[2] = {ESP_OK, ESP_OK};
 // Pico de amostra (magnitude maxima) do ultimo buffer escrito por cada task.
 volatile uint32_t peakSample[2] = {0, 0};
+// Monitor de underrun do DAC: contagem cumulativa quando o gap entre escritas
+// I2S supera a capacidade total do ring DMA, e o maior gap desde o ultimo reporte.
+volatile uint32_t underrunCount[2] = {0, 0};
+volatile uint32_t underrunMaxGapUs[2] = {0, 0};
+// Uso do buffer DMA (% dos frames enfileirados) desde o ultimo reporte:
+// somatorio de pct + contagem (para a media) e pct minimo (pior caso / folga).
+volatile uint32_t buffSumPct[2] = {0, 0};
+volatile uint32_t buffCount[2] = {0, 0};
+volatile uint32_t buffMinPct[2] = {100, 100};
 
 // Canal ESP-NOW em uso (definido pelo scan no boot; ESPNOW_CHANNEL e o fallback).
 uint8_t activeEspNowChannel = ESPNOW_CHANNEL;
@@ -208,29 +230,111 @@ void sendCalibCommand(uint8_t deckId, float multiplier) {
   Serial.printf("CALIB_SENT deck=%d M=%.4f\n", deckId, multiplier);
 }
 
+// Envia um parametro de configuracao ao TX de um deck via ESP-NOW.
+// O id vai no campo batteryPct; o valor (Q1000 p/ floats) em rpmCenti.
+void sendParamCommand(uint8_t deckId, uint8_t paramId, int16_t value) {
+  if (deckId < 1 || deckId > 2) return;
+  uint8_t deckIndex = deckId - 1;
+  uint8_t macCopy[6];
+  portENTER_CRITICAL(&stateMux);
+  if (deckStates[deckIndex].lastSeenMillis == 0) { portEXIT_CRITICAL(&stateMux); Serial.println("CFG_ERR: deck sem sinal"); return; }
+  memcpy(macCopy, deckStates[deckIndex].mac, 6);
+  portEXIT_CRITICAL(&stateMux);
+  if (!ensurePeer(macCopy)) return;
+  dvs_packet cfg = {};
+  cfg.msgType = MSG_SET_PARAM;
+  cfg.version = PROTOCOL_VERSION;
+  cfg.deckId = deckId;
+  cfg.batteryPct = paramId;
+  cfg.rpmCenti = value;
+  cfg.timestampMicros = micros();
+  // ESP-NOW e sem conexao: envia 3x para reduzir perda por colisao/ruido.
+  for (int i = 0; i < 3; i++) {
+    esp_now_send(macCopy, (uint8_t *)&cfg, sizeof(cfg));
+    delay(20);
+  }
+}
+
 void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *dataPtr, int len) {
   if (len != sizeof(dvs_packet)) return;
   dvs_packet packet; memcpy(&packet, dataPtr, sizeof(packet));
   if (packet.version != PROTOCOL_VERSION || packet.deckId < 1 || packet.deckId > 2) return;
+  if (packet.msgType == MSG_CFG_ACK) {
+    const char *name = "?";
+    switch (packet.batteryPct) {
+      case CFG_DECK_ID: name = "deckId"; break;
+      case CFG_ALPHA_SLOW: name = "alphaSlow"; break;
+      case CFG_ALPHA_FAST: name = "alphaFast"; break;
+      case CFG_FAST_THRESHOLD: name = "threshold"; break;
+    }
+    if (packet.batteryPct == CFG_DECK_ID) Serial.printf("CFG_ACK,deck=%u,%s=%d\n", packet.deckId, name, packet.rpmCenti);
+    else Serial.printf("CFG_ACK,deck=%u,%s=%.3f\n", packet.deckId, name, (float)packet.rpmCenti / 1000.0f);
+    return;
+  }
   const uint8_t *sourceMac = info->src_addr; uint8_t deckIndex = packet.deckId - 1; deck_state *state = &deckStates[deckIndex];
   int8_t rssi = (info->rx_ctrl != NULL) ? (int8_t)info->rx_ctrl->rssi : -127;
   portENTER_CRITICAL(&stateMux); memcpy(state->mac, sourceMac, 6); state->lastSeenMillis = millis(); state->rssi = rssi; state->batteryPct = packet.batteryPct; portEXIT_CRITICAL(&stateMux);
   if (packet.msgType == MSG_HELLO) { portENTER_CRITICAL(&stateMux); memcpy(pendingWelcomeMac[deckIndex], sourceMac, 6); pendingWelcomeDeck[deckIndex] = packet.deckId; hasPendingWelcome[deckIndex] = true; portEXIT_CRITICAL(&stateMux); return; }
   if (packet.msgType == MSG_CALIB_ACK) { Serial.printf("CALIB_ACK deck=%d M=%.4f\n", packet.deckId, (float)packet.rpmCenti / 10000.0f); return; }
   if (packet.msgType != MSG_DATA) return;
-  uint16_t lost = 0; portENTER_CRITICAL(&stateMux); if (state->seen) { uint32_t seqDelta = packet.seq - state->lastSeq; if (seqDelta > 1) lost = (uint16_t)min(seqDelta - 1, 65535UL); } if (!state->seen) state->firstSeenMillis = millis(); state->seen = true; state->rpmCenti = packet.rpmCenti; state->lastSeq = packet.seq; state->packetCount++; state->lostPackets += lost; state->lastGap = lost; portEXIT_CRITICAL(&stateMux);
+  uint16_t lost = 0; portENTER_CRITICAL(&stateMux); if (state->seen) { uint32_t seqDelta = packet.seq - state->lastSeq; if (seqDelta > 1) lost = (uint16_t)min(seqDelta - 1, 65535UL); } if (!state->seen) state->firstSeenMillis = millis(); state->seen = true; state->rpmCenti = packet.rpmCenti; state->lastSeq = packet.seq; state->packetCount++; state->lostPackets += lost; state->lastGap = lost; state->winReceived++; state->winMissed += lost; portEXIT_CRITICAL(&stateMux);
 }
 
 // Escaneia as redes 2.4 GHz vizinhas e escolhe o canal com menos APs fortes.
+// Canal 2.4GHz persistido em NVS: escolha manual sobrevive a reboots.
+int loadChannelNvs() {
+  Preferences prefs;
+  prefs.begin("dvs", true);
+  int saved = prefs.getInt("chan", 0);
+  prefs.end();
+  if (saved >= 1 && saved <= 13) return saved;
+  return 0;
+}
+void saveChannelNvs(uint8_t ch) {
+  Preferences prefs;
+  prefs.begin("dvs", false);
+  prefs.putInt("chan", ch);
+  prefs.end();
+}
+
+// Aplica o canal no radio e re-posiciona os peers conhecidos (usado pelo CHANNEL/SCAN).
+void applyChannelToRadio() {
+  esp_wifi_set_channel(activeEspNowChannel, WIFI_SECOND_CHAN_NONE);
+  for (uint8_t d = 0; d < 2; d++) {
+    uint8_t macCopy[6];
+    portENTER_CRITICAL(&stateMux);
+    memcpy(macCopy, deckStates[d].mac, 6);
+    portEXIT_CRITICAL(&stateMux);
+    if (esp_now_is_peer_exist(macCopy)) {
+      esp_now_peer_info_t p = {};
+      memcpy(p.peer_addr, macCopy, 6);
+      p.channel = activeEspNowChannel;
+      p.encrypt = false;
+      esp_now_mod_peer(&p);
+    }
+  }
+}
+
+// Se ja houver canal salvo em NVS (escolha manual anterior), usa ele direto.
+// force=true = re-scannea mesmo assim (comando SCAN) e salva o resultado.
 // IMPORTANTE: rodar ANTES de ativar o modo Long Range — com WIFI_PROTOCOL_LR
 // puro o radio nao decodifica beacons padrao. Empates favorecem 1/6/11.
-void selectCleanChannel() {
+void selectCleanChannel(bool force = false) {
+  if (!force) {
+    int saved = loadChannelNvs();
+    if (saved >= 1 && saved <= 13) {
+      activeEspNowChannel = (uint8_t)saved;
+      Serial.printf("RF_CHANNEL,%d (salvo em NVS)\n", activeEspNowChannel);
+      return;
+    }
+  }
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
   Serial.println("SCAN: buscando canal 2.4GHz mais limpo...");
   int found = WiFi.scanNetworks();
   if (found <= 0) {
     Serial.println("SCAN: nenhuma rede encontrada, mantendo canal padrao");
+    saveChannelNvs(activeEspNowChannel);
     Serial.printf("RF_CHANNEL,%d\n", activeEspNowChannel);
     return;
   }
@@ -251,6 +355,7 @@ void selectCleanChannel() {
     if (score[ch] < bestScore) { bestScore = score[ch]; best = ch; }
   }
   activeEspNowChannel = best;
+  saveChannelNvs(best);
   Serial.printf("RF_CHANNEL,%d\n", activeEspNowChannel);
 }
 
@@ -280,7 +385,7 @@ static inline void renderCv02Sample(audio_deck_state *deck, float rpm, int16_t *
 }
 
 float readTargetRpm(uint8_t deckId) { uint8_t deckIndex = deckId <= 1 ? 0 : 1; int16_t rpmCenti = 0; uint32_t lastSeenMillis = 0; portENTER_CRITICAL(&stateMux); rpmCenti = deckStates[deckIndex].rpmCenti; lastSeenMillis = deckStates[deckIndex].lastSeenMillis; portEXIT_CRITICAL(&stateMux); if (lastSeenMillis == 0 || millis() - lastSeenMillis > DECK_TIMEOUT_MS) return 0.0f; return (float)rpmCenti / 100.0f; }
-void audioTask(void *param) { audio_deck_state *deck = (audio_deck_state *)param; int16_t buffer[DMA_BUF_LEN * 2]; while (true) {
+void audioTask(void *param) { audio_deck_state *deck = (audio_deck_state *)param; int16_t buffer[DMA_BUF_LEN * 2]; uint8_t deckIdx = deck->deckId - 1; uint32_t lastWriteUs = micros(); uint32_t qFrames = DMA_TOTAL_FRAMES; while (true) {
     float targetRpm = readTargetRpm(deck->deckId);
     bool below = (fabsf(targetRpm) < CALIB_THRESHOLD_RPM);
     bool stopped;
@@ -299,12 +404,29 @@ void audioTask(void *param) { audio_deck_state *deck = (audio_deck_state *)param
       deck->calibStableStart = 0;
       deck->calibrating = false;
       float delta = targetRpm - deck->filteredRpm;
-      float alpha = (fabsf(delta) > 10.0f) ? 0.8f : RPM_SMOOTHING;
+      float alpha = (fabsf(delta) > 2.5f) ? 0.8f : RPM_SMOOTHING;
       deck->filteredRpm += delta * alpha;
     }
     for (int i = 0; i < DMA_BUF_LEN; i++) { int16_t left, right; if (millis() < deck->testToneUntil) { deck->tonePhase += (uint32_t)((float)deck->testToneFreqHz * 65536.0f / SAMPLE_RATE); int16_t tone = (int16_t)((float)sinTable[(deck->tonePhase >> 6) & (SIN_COS_TABLE_SIZE - 1)] * TEST_TONE_AMPLITUDE); left = tone; right = tone; } else if (stopped) { left = 0; right = 0; } else { renderCv02Sample(deck, deck->filteredRpm, &left, &right); } buffer[i * 2] = left; buffer[i * 2 + 1] = right; }
     size_t written;
     esp_err_t i2sErr = i2s_write(deck->port, buffer, sizeof(buffer), &written, portMAX_DELAY);
+    {
+      uint32_t nowUs = micros();
+      uint32_t writeGapUs = nowUs - lastWriteUs;
+      lastWriteUs = nowUs;
+      if (writeGapUs > UNDERFLOW_GAP_US) underrunCount[deckIdx]++;
+      if (writeGapUs > underrunMaxGapUs[deckIdx]) underrunMaxGapUs[deckIdx] = writeGapUs;
+      // Estimativa da ocupacao do ring DMA (Lei de Little): o DAC consome
+      // frames pelo clock real; o task repoe DMA_BUF_LEN por escrita.
+      uint32_t consumedFrames = (uint32_t)((uint64_t)writeGapUs * SAMPLE_RATE / 1000000ULL);
+      if (consumedFrames > qFrames) consumedFrames = qFrames;
+      qFrames = qFrames - consumedFrames + DMA_BUF_LEN;
+      if (qFrames > DMA_TOTAL_FRAMES) qFrames = DMA_TOTAL_FRAMES;
+      uint32_t pct = (uint32_t)((uint64_t)qFrames * 100ULL / DMA_TOTAL_FRAMES);
+      buffSumPct[deckIdx] += pct;
+      buffCount[deckIdx]++;
+      if (pct < buffMinPct[deckIdx]) buffMinPct[deckIdx] = pct;
+    }
     if (i2sErr == ESP_OK) {
       audioWriteCount[deck->deckId - 1]++;
       int16_t peak = 0;
@@ -366,23 +488,48 @@ void handleSerialCommand() {
         int ch = cmdLine.substring(8).toInt();
         if (ch >= 1 && ch <= 13) {
           activeEspNowChannel = (uint8_t)ch;
-          esp_wifi_set_channel(activeEspNowChannel, WIFI_SECOND_CHAN_NONE);
-          for (uint8_t d = 0; d < 2; d++) {
-            uint8_t macCopy[6];
-            portENTER_CRITICAL(&stateMux);
-            memcpy(macCopy, deckStates[d].mac, 6);
-            portEXIT_CRITICAL(&stateMux);
-            if (esp_now_is_peer_exist(macCopy)) {
-              esp_now_peer_info_t p = {};
-              memcpy(p.peer_addr, macCopy, 6);
-              p.channel = activeEspNowChannel;
-              p.encrypt = false;
-              esp_now_mod_peer(&p);
-            }
-          }
+          applyChannelToRadio();
+          saveChannelNvs((uint8_t)ch);
           Serial.printf("RF_CHANNEL,%d\n", activeEspNowChannel);
         } else {
           Serial.println("CHANNEL_ERR: use 1-13");
+        }
+      } else if (cmdLine.startsWith("SCAN")) {
+        selectCleanChannel(true);
+        applyChannelToRadio();
+      } else if (cmdLine.startsWith("DECK_ID")) {
+        int fromSlot = cmdLine.substring(8).toInt();
+        int toId = 0;
+        int sp = cmdLine.indexOf(' ', 8);
+        if (sp >= 8) toId = cmdLine.substring(sp + 1).toInt();
+        if (fromSlot < 1 || fromSlot > 2) {
+          Serial.println("CFG_ERR: use DECK_ID <1|2> [1|2] (slot -> novo deck; sem argumento inverte)");
+        } else {
+          if (toId != 1 && toId != 2) toId = (fromSlot == 1) ? 2 : 1;
+          sendParamCommand((uint8_t)fromSlot, CFG_DECK_ID, (int16_t)toId);
+          Serial.printf("DECK_ID_SENT slot=%d newId=%d\n", fromSlot, toId);
+        }
+      } else if (cmdLine.startsWith("FILTER")) {
+        float slow = 0.0f, fast = 0.0f, thr = 0.0f;
+        int n = sscanf(cmdLine.c_str(), "FILTER %f %f %f", &slow, &fast, &thr);
+        if (n != 3 || slow < 0.05f || slow > 0.99f || fast < 0.05f || fast > 0.99f || thr < 0.01f || thr > 10.0f) {
+          Serial.println("CFG_ERR: use FILTER <alphaSlow 0.05-0.99> <alphaFast 0.05-0.99> <threshold 0.01-10.0>");
+        } else {
+          uint8_t sent = 0;
+          for (uint8_t d = 1; d <= 2; d++) {
+            uint8_t macCopy[6];
+            portENTER_CRITICAL(&stateMux);
+            uint32_t last = deckStates[d - 1].lastSeenMillis;
+            memcpy(macCopy, deckStates[d - 1].mac, 6);
+            portEXIT_CRITICAL(&stateMux);
+            if (last == 0) continue;
+            sendParamCommand(d, CFG_ALPHA_SLOW, (int16_t)lroundf(slow * 1000.0f));
+            sendParamCommand(d, CFG_ALPHA_FAST, (int16_t)lroundf(fast * 1000.0f));
+            sendParamCommand(d, CFG_FAST_THRESHOLD, (int16_t)lroundf(thr * 1000.0f));
+            sent++;
+          }
+          if (sent == 0) Serial.println("CFG_ERR: nenhum deck com sinal");
+          else Serial.printf("FILTER_SENT decks=%u slow=%.3f fast=%.3f thr=%.3f\n", sent, slow, fast, thr);
         }
       }
       cmdLine = "";
@@ -408,6 +555,16 @@ void updateDeckLed(uint8_t deckIndex, uint8_t pin) {
   uint32_t now = millis();
   bool alive = (seen && lastSeenMillis != 0 && (now - lastSeenMillis <= DECK_TIMEOUT_MS));
   if (!alive) {
+    // Timeout: reinicia a base de sequencia para nao contabilizar o gap da
+    // varredura de reconexao como perda de pacotes (o TX segue enviando
+    // durante o scan, mas o RX nao escuta canais de varredura).
+    portENTER_CRITICAL(&stateMux);
+    if (deckStates[deckIndex].seen) {
+      deckStates[deckIndex].seen = false;
+      deckStates[deckIndex].lastSeq = 0;
+      deckStates[deckIndex].lastGap = 0;
+    }
+    portEXIT_CRITICAL(&stateMux);
     digitalWrite(pin, LOW);
     return;
   }
@@ -445,6 +602,28 @@ void sendTelemetry() {
     (audioDecks[1].testToneUntil != 0 && now < audioDecks[1].testToneUntil) ? 1 : 0,
     (int)lastI2sErr[0], (int)lastI2sErr[1],
     (unsigned long)peakSample[0], (unsigned long)peakSample[1]);
+  uint32_t avgBuffA = buffCount[0] ? buffSumPct[0] / buffCount[0] : 100;
+  uint32_t avgBuffB = buffCount[1] ? buffSumPct[1] / buffCount[1] : 100;
+  Serial.printf("AUDIO_STAT,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu\n",
+    (unsigned long)underrunCount[0], (unsigned long)underrunCount[1],
+    (unsigned long)underrunMaxGapUs[0], (unsigned long)underrunMaxGapUs[1],
+    (unsigned long)avgBuffA, (unsigned long)buffMinPct[0],
+    (unsigned long)avgBuffB, (unsigned long)buffMinPct[1]);
+  underrunMaxGapUs[0] = 0;
+  underrunMaxGapUs[1] = 0;
+  buffSumPct[0] = 0; buffCount[0] = 0; buffMinPct[0] = 100;
+  buffSumPct[1] = 0; buffCount[1] = 0; buffMinPct[1] = 100;
+  // Perda real em % desta janela de 500ms; 255 = nenhum pacote recebido no periodo.
+  uint32_t lossPct[2];
+  for (uint8_t i = 0; i < 2; i++) {
+    uint32_t total = local[i].winReceived + local[i].winMissed;
+    lossPct[i] = total ? (unsigned long)(local[i].winMissed * 100UL / total) : 255;
+  }
+  Serial.printf("LOSS_PCT,%lu,%lu\n", (unsigned long)lossPct[0], (unsigned long)lossPct[1]);
+  portENTER_CRITICAL(&stateMux);
+  deckStates[0].winReceived = 0; deckStates[0].winMissed = 0;
+  deckStates[1].winReceived = 0; deckStates[1].winMissed = 0;
+  portEXIT_CRITICAL(&stateMux);
 }
 
 void setup() {
