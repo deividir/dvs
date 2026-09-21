@@ -95,9 +95,9 @@ bool wasReceiverReady = false;
 // - FAST_THRESHOLD_RPM define o que conta como "transiente
 //   grande" (em RPM). Ajuste conforme o comportamento desejado:
 //   valores menores tornam o ataque rapido mais sensivel.
-float ALPHA_SLOW = 0.75f;
-float ALPHA_FAST = 0.85f;
-float FAST_THRESHOLD_RPM = 0.3f;
+float ALPHA_SLOW = 0.50f;
+float ALPHA_FAST = 0.70f;
+float FAST_THRESHOLD_RPM = 0.15f;
 float DEADZONE_RPM = 0.20f;
 // SENTIDO DO GIRO: depende de como o BMI270 esta MONTADO na placa.
 // - Se girando PARA FRENTE o painel/Serato mostra para TRAS: multiplique por -1.

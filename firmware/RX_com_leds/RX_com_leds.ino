@@ -487,14 +487,20 @@ void handleSerialCommand() {
           Serial.println("CALIB_ERR: valor invalido (use M entre 0.5 e 2.0)");
         }
       } else if (cmdLine.startsWith("CHANNEL")) {
-        int ch = cmdLine.substring(8).toInt();
-        if (ch >= 1 && ch <= 13) {
-          activeEspNowChannel = (uint8_t)ch;
-          applyChannelToRadio();
-          saveChannelNvs((uint8_t)ch);
+        String arg = cmdLine.substring(7);
+        arg.trim();
+        if (arg.length() == 0) {
           Serial.printf("RF_CHANNEL,%d\n", activeEspNowChannel);
         } else {
-          Serial.println("CHANNEL_ERR: use 1-13");
+          int ch = arg.toInt();
+          if (ch >= 1 && ch <= 13) {
+            activeEspNowChannel = (uint8_t)ch;
+            applyChannelToRadio();
+            saveChannelNvs((uint8_t)ch);
+            Serial.printf("RF_CHANNEL,%d\n", activeEspNowChannel);
+          } else {
+            Serial.println("CHANNEL_ERR: use 1-13");
+          }
         }
       } else if (cmdLine.startsWith("SCAN")) {
         selectCleanChannel(true);

@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>DVS Receiver Monitor</title>
+<link rel="stylesheet" href="sidebar.css">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
@@ -11,17 +12,17 @@
     color: #e6edf3;
     font-family: 'Segoe UI', system-ui, sans-serif;
     min-height: 100vh;
-    padding: 20px;
   }
-  .container { max-width: 1280px; margin: 0 auto; }
-  header {
+  h1 { font-size: 22px; letter-spacing: 1px; }
+  h1 span { color: #58a6ff; }
+  .page-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
     margin-bottom: 20px;
+    flex-wrap: wrap;
+    gap: 8px;
   }
-  h1 { font-size: 22px; letter-spacing: 1px; }
-  h1 span { color: #58a6ff; }
   .badge {
     display: inline-block;
     padding: 4px 10px;
@@ -48,25 +49,12 @@
   .btn.small { padding: 6px 12px; font-size: 12px; }
   .toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
   .toolbar .label { color: #8b949e; font-size: 13px; }
-  .grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 16px;
-  }
-  @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
-  .dashboard-layout {
-    display: grid;
-    grid-template-columns: 1.25fr 1fr;
-    gap: 16px;
-    align-items: start;
-  }
-  @media (max-width: 1000px) { .dashboard-layout { grid-template-columns: 1fr; } }
-  .calib-col { display: flex; flex-direction: column; gap: 16px; }
   .card {
     background: #161b22;
     border: 1px solid #30363d;
     border-radius: 10px;
     padding: 16px;
+    margin-bottom: 16px;
   }
   .card h2 { font-size: 16px; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
   .card h2 .deck { color: #58a6ff; }
@@ -74,17 +62,6 @@
   .dot.green { background: #3fb950; box-shadow: 0 0 8px #3fb950; }
   .dot.red { background: #f85149; box-shadow: 0 0 8px #f85149; }
   .dot.gray { background: #484f58; }
-  .row {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 8px 0;
-    border-bottom: 1px solid #21262d;
-    font-size: 14px;
-  }
-  .row:last-child { border-bottom: none; }
-  .row .label { color: #8b949e; }
-  .row .value { font-weight: 600; font-variant-numeric: tabular-nums; }
   .battery-bar {
     width: 100px;
     height: 8px;
@@ -96,18 +73,47 @@
     vertical-align: middle;
   }
   .battery-fill { display: block; height: 100%; border-radius: 4px; transition: width 0.3s; }
-  .battery-fill.good { background: #3fb950; }
-  .battery-fill.mid { background: #d29922; }
-  .battery-fill.low { background: #f85149; }
   .rssi-bars { display: inline-flex; gap: 2px; align-items: flex-end; margin-left: 6px; }
   .rssi-bars .bar { width: 5px; background: #58a6ff; border-radius: 1px; }
-  .log {
+  .warn { color: #d29922; }
+  .good { color: #3fb950; }
+  .bad { color: #f85149; }
+  .info-msg { color: #8b949e; font-size: 13px; margin-top: 8px; }
+  .disc { display: block; margin: 8px auto; }
+  .deck-home {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 48px;
+    max-width: 1400px;
+    margin: 0 auto;
+  }
+  @media (max-width: 700px) { .deck-home { grid-template-columns: 1fr; gap: 24px; } }
+  .view { display: none; }
+  .view.active { display: block; }
+  .inner { max-width: 1100px; }
+
+  /* Log compartilhado */
+  .log-wrap {
     margin-top: 16px;
     background: #161b22;
     border: 1px solid #30363d;
     border-radius: 10px;
     padding: 12px;
-    max-height: 180px;
+    max-width: 1100px;
+  }
+  .log-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 8px;
+    font-size: 12px;
+    color: #8b949e;
+  }
+  .log-head label { display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+  .log-head input[type=checkbox] { accent-color: #58a6ff; width: 14px; height: 14px; cursor: pointer; }
+  .log {
+    max-height: 200px;
     overflow-y: auto;
     font-family: Consolas, monospace;
     font-size: 12px;
@@ -115,166 +121,230 @@
   }
   .log .line { padding: 2px 0; border-bottom: 1px dashed #21262d; }
   .log .line:last-child { border-bottom: none; }
-  .warning { color: #d29922; }
-  .warn { color: #d29922; }
-  .good { color: #3fb950; }
-  .bad { color: #f85149; }
-  .info-msg { color: #8b949e; font-size: 13px; margin-top: 8px; }
-  .disc { display: block; margin: 8px auto; }
-  .calib-card { margin-top: 0; }
+
+  /* Calibração */
   .calib-block { border: 1px solid #30363d; border-radius: 8px; padding: 12px; background: #0d1117; }
   .calib-block h3 { font-size: 14px; margin-bottom: 10px; color: #58a6ff; }
   .calib-block h3 .aside { color: #8b949e; font-weight: 400; font-size: 12px; }
   .calib-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 0; font-size: 13px; }
   .calib-line .label { color: #8b949e; }
   .calib-val { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .live-rpm { font-variant-numeric: tabular-nums; font-weight: 600; }
   input[type=number] { background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 5px 8px; font-size: 13px; font-variant-numeric: tabular-nums; width: 90px; }
   textarea.calib-snippet { width: 100%; background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 8px; font-family: Consolas, monospace; font-size: 11px; margin-top: 8px; resize: vertical; min-height: 48px; }
+
+  /* Testes de áudio */
+  .test-block { border: 1px solid #30363d; border-radius: 8px; padding: 12px; background: #0d1117; margin-bottom: 12px; }
+  .test-block h3 { font-size: 14px; margin-bottom: 10px; color: #58a6ff; }
+  .test-line { display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 13px; flex-wrap: wrap; }
+  .test-line .label { color: #8b949e; }
+
+  /* WiFi */
+  .channel-info { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  .channel-badge { background: #1f6feb; color: #fff; padding: 4px 12px; border-radius: 20px; font-size: 14px; font-weight: 600; }
 </style>
 </head>
 <body>
-<div class="container">
-  <header>
-    <h1>DVS <span>RECEIVER MONITOR</span></h1>
+<script src="sidebar.js"></script>
+<div class="main-content">
+  <div class="page-header">
+    <h1>DVS <span id="pageTitle">RECEIVER MONITOR</span></h1>
     <div>
       <span id="chBadge" class="badge off">Canal --</span>
       <span id="linkBadge" class="badge off">Desconectado</span>
-      <button id="btnConnect" class="btn">Conectar</button>
-    </div>
-  </header>
-
-  <div class="toolbar">
-    <span class="label">Canal 2,4GHz:</span>
-    <input id="chInput" type="number" min="1" max="13" value="12" title="Canal Wi-Fi do RX (1-13)">
-    <button id="btnChannel" class="btn small">Trocar canal</button>
-    <button id="btnChannelScan" class="btn small">Escanear</button>
-    <span style="width:16px;"></span>
-    <span class="label">Teste de DAC (tom 1kHz):</span>
-    <button id="btnTestA" class="btn small">Testar DAC A</button>
-    <button id="btnTestB" class="btn small">Testar DAC B</button>
-    <button id="btnTestOff" class="btn small danger">Parar</button>
-    <button id="btnUptime" class="btn small">Tempo conectado</button>
-  </div>
-
-<div class="dashboard-layout">
-  <div>
-  <div class="grid">
-    <div class="card">
-      <h2><span class="dot gray" id="dotA"></span> Deck <span class="deck">A</span></h2>
-      <canvas class="disc" id="discA" width="140" height="140"></canvas>
-      <div class="row"><span class="label">Estado</span><span class="value" id="statusA">--</span></div>
-      <div class="row"><span class="label">Sinal (RSSI)</span><span class="value" id="rssiA">--<span class="rssi-bars" id="barsA"></span></span></div>
-      <div class="row"><span class="label">Bateria TX</span><span class="value" id="battA">--<span class="battery-bar"><span class="battery-fill" id="battFillA" style="width:0%"></span></span></span></div>
-      <div class="row"><span class="label">RPM</span><span class="value" id="rpmA">--</span></div>
-      <div class="row"><span class="label">Timecode</span><span class="value" id="tcA">--</span></div>
-      <div class="row"><span class="label">Pacotes perdidos</span><span class="value" id="lostA">--</span></div>
-      <div class="row"><span class="label">Chegada de pkt</span><span class="value" id="pktA">--</span></div>
-      <div class="row"><span class="label">Tempo conectado</span><span class="value" id="upA">--</span></div>
-      <div class="row"><span class="label">Áudio (buf/0.5s)</span><span class="value" id="wrA">--</span></div>
-      <div class="row"><span class="label">Pico amostra</span><span class="value" id="pkA">--</span></div>
-      <div class="row"><span class="label">Erro I2S</span><span class="value" id="errA">--</span></div>
-      <div class="row"><span class="label">Underruns DMA</span><span class="value" id="undA">--</span></div>
-      <div class="row"><span class="label">Buffer DMA (uso médio)</span><span class="value" id="bufA">--</span></div>
-      <div class="row"><span class="label">Perda (janela 0,5s)</span><span class="value" id="lossA">--</span></div>
-      <div class="row"><span class="label">Deck (TX atual)</span><span class="value" id="cfgIdA">--</span></div>
-      <div class="row"><span class="label">Tom teste</span><span class="value" id="toneA">--</span></div>
-    </div>
-
-    <div class="card">
-      <h2><span class="dot gray" id="dotB"></span> Deck <span class="deck">B</span></h2>
-      <canvas class="disc" id="discB" width="140" height="140"></canvas>
-      <div class="row"><span class="label">Estado</span><span class="value" id="statusB">--</span></div>
-      <div class="row"><span class="label">Sinal (RSSI)</span><span class="value" id="rssiB">--<span class="rssi-bars" id="barsB"></span></span></div>
-      <div class="row"><span class="label">Bateria TX</span><span class="value" id="battB">--<span class="battery-bar"><span class="battery-fill" id="battFillB" style="width:0%"></span></span></span></div>
-      <div class="row"><span class="label">RPM</span><span class="value" id="rpmB">--</span></div>
-      <div class="row"><span class="label">Timecode</span><span class="value" id="tcB">--</span></div>
-      <div class="row"><span class="label">Pacotes perdidos</span><span class="value" id="lostB">--</span></div>
-      <div class="row"><span class="label">Chegada de pkt</span><span class="value" id="pktB">--</span></div>
-      <div class="row"><span class="label">Tempo conectado</span><span class="value" id="upB">--</span></div>
-      <div class="row"><span class="label">Áudio (buf/0.5s)</span><span class="value" id="wrB">--</span></div>
-      <div class="row"><span class="label">Pico amostra</span><span class="value" id="pkB">--</span></div>
-      <div class="row"><span class="label">Erro I2S</span><span class="value" id="errB">--</span></div>
-      <div class="row"><span class="label">Underruns DMA</span><span class="value" id="undB">--</span></div>
-      <div class="row"><span class="label">Buffer DMA (uso médio)</span><span class="value" id="bufB">--</span></div>
-      <div class="row"><span class="label">Perda (janela 0,5s)</span><span class="value" id="lossB">--</span></div>
-      <div class="row"><span class="label">Deck (TX atual)</span><span class="value" id="cfgIdB">--</span></div>
-      <div class="row"><span class="label">Tom teste</span><span class="value" id="toneB">--</span></div>
     </div>
   </div>
-  </div>
 
-  <div class="calib-col">
-  <div class="card calib-card">
-    <h2>Calibração de velocidade <span style="color:#8b949e;font-weight:400;font-size:13px;">(vinil 33 1/3 → 33.333 rpm)</span></h2>
-    <div class="info-msg" style="margin-bottom:12px;">
-      Coloque o tocadiscos do deck no pitch indicado (0%, +8% ou -8%), espere ~3s girando e clique no botão correspondente.
-      Depois clique em "Calcular". Use "Enviar via ESP-NOW" para gravar o novo multiplicador no TX sem cabo, ou copie o snippet.
+  <!-- ==================== DASHBOARD ==================== -->
+  <section id="view-dashboard" class="view">
+    <div class="toolbar">
+      <button id="btnUptime" class="btn small">Tempo conectado</button>
     </div>
-    <div class="info-msg" style="margin-bottom:12px;">
-      O TX precisa estar ligado e pareado (segure o RESET do TX para ligar se estiver dormindo).
-    </div>
-    <div class="grid">
-      <div class="calib-block">
-        <h3>Deck A <span class="aside">(TX_DECK_ID 1)</span></h3>
-        <div class="calib-line"><span class="label">Multiplicador atual no TX</span><input id="calK0" type="number" step="0.0001" value="0.999"></div>
-        <div class="calib-line"><button class="btn small" onclick="captureCalib(0,0)">0%</button><span class="calib-val" id="calR0_0">--</span></div>
-        <div class="calib-line"><button class="btn small" onclick="captureCalib(0,1)">+8%</button><span class="calib-val" id="calR0_1">--</span></div>
-        <div class="calib-line"><button class="btn small" onclick="captureCalib(0,2)">-8%</button><span class="calib-val" id="calR0_2">--</span></div>
-        <div class="calib-line"><button class="btn small" onclick="calcCalib(0)">Calcular</button></div>
-        <div class="calib-line"><span class="label">Novo multiplicador</span><span class="calib-val good" id="calNew0">--</span></div>
-        <div class="calib-line"><span class="label">R+8/R0</span><span class="calib-val" id="calVp8_0">--</span></div>
-        <div class="calib-line"><span class="label">R-8/R0</span><span class="calib-val" id="calVm8_0">--</span></div>
-        <textarea class="calib-snippet" id="calSnip0" readonly placeholder="Capture e calcule para gerar o valor..."></textarea>
-        <div class="calib-line" style="margin-top:6px;"><button class="btn small" onclick="copyCalib(0)">Copiar snippet</button> <button class="btn small" onclick="sendCalibOta(0)">Enviar via ESP-NOW</button></div>
+    <div class="deck-home">
+      <div class="card">
+        <h2><span class="dot gray" id="dotA"></span> Deck <span class="deck">A</span></h2>
+        <canvas class="disc" id="discA" width="120" height="120"></canvas>
+        <div class="deck-grid">
+          <div class="row"><span class="label">Sinal (RSSI)</span><span class="value" id="rssiA">--<span class="rssi-bars" id="barsA"></span></span></div>
+          <div class="row"><span class="label">Bateria TX</span><span class="value" id="battA">--<span class="battery-bar"><span class="battery-fill" id="battFillA" style="width:0%"></span></span></span></div>
+          <div class="row"><span class="label">RPM</span><span class="value" id="rpmA">--</span></div>
+          <div class="row"><span class="label">Timecode</span><span class="value" id="tcA">--</span></div>
+          <div class="row"><span class="label">Estado</span><span class="value" id="statusA">--</span></div>
+          <div class="row"><span class="label">Deck (TX atual)</span><span class="value" id="cfgIdA">--</span></div>
+          <div class="row"><span class="label">Pacotes perdidos</span><span class="value" id="lostA">--</span></div>
+          <div class="row"><span class="label">Chegada de pkt</span><span class="value" id="pktA">--</span></div>
+          <div class="row"><span class="label">Perda (janela 0,5s)</span><span class="value" id="lossA">--</span></div>
+          <div class="row"><span class="label">Underruns DMA</span><span class="value" id="undA">--</span></div>
+          <div class="row"><span class="label">Buffer DMA (uso médio)</span><span class="value" id="bufA">--</span></div>
+          <div class="row"><span class="label">Áudio (buf/0.5s)</span><span class="value" id="wrA">--</span></div>
+          <div class="row"><span class="label">Pico amostra</span><span class="value" id="pkA">--</span></div>
+          <div class="row"><span class="label">Erro I2S</span><span class="value" id="errA">--</span></div>
+          <div class="row"><span class="label">Tempo conectado</span><span class="value" id="upA">--</span></div>
+          <div class="row"><span class="label">Tom teste</span><span class="value" id="toneA">--</span></div>
+        </div>
       </div>
-      <div class="calib-block">
-        <h3>Deck B <span class="aside">(TX_DECK_ID 2)</span></h3>
-        <div class="calib-line"><span class="label">Multiplicador atual no TX</span><input id="calK1" type="number" step="0.0001" value="0.9974"></div>
-        <div class="calib-line"><button class="btn small" onclick="captureCalib(1,0)">0%</button><span class="calib-val" id="calR1_0">--</span></div>
-        <div class="calib-line"><button class="btn small" onclick="captureCalib(1,1)">+8%</button><span class="calib-val" id="calR1_1">--</span></div>
-        <div class="calib-line"><button class="btn small" onclick="captureCalib(1,2)">-8%</button><span class="calib-val" id="calR1_2">--</span></div>
-        <div class="calib-line"><button class="btn small" onclick="calcCalib(1)">Calcular</button></div>
-        <div class="calib-line"><span class="label">Novo multiplicador</span><span class="calib-val good" id="calNew1">--</span></div>
-        <div class="calib-line"><span class="label">R+8/R0</span><span class="calib-val" id="calVp8_1">--</span></div>
-        <div class="calib-line"><span class="label">R-8/R0</span><span class="calib-val" id="calVm8_1">--</span></div>
-        <textarea class="calib-snippet" id="calSnip1" readonly placeholder="Capture e calcule para gerar o valor..."></textarea>
-        <div class="calib-line" style="margin-top:6px;"><button class="btn small" onclick="copyCalib(1)">Copiar snippet</button> <button class="btn small" onclick="sendCalibOta(1)">Enviar via ESP-NOW</button></div>
+      <div class="card">
+        <h2><span class="dot gray" id="dotB"></span> Deck <span class="deck">B</span></h2>
+        <canvas class="disc" id="discB" width="120" height="120"></canvas>
+        <div class="deck-grid">
+          <div class="row"><span class="label">Sinal (RSSI)</span><span class="value" id="rssiB">--<span class="rssi-bars" id="barsB"></span></span></div>
+          <div class="row"><span class="label">Bateria TX</span><span class="value" id="battB">--<span class="battery-bar"><span class="battery-fill" id="battFillB" style="width:0%"></span></span></span></div>
+          <div class="row"><span class="label">RPM</span><span class="value" id="rpmB">--</span></div>
+          <div class="row"><span class="label">Timecode</span><span class="value" id="tcB">--</span></div>
+          <div class="row"><span class="label">Estado</span><span class="value" id="statusB">--</span></div>
+          <div class="row"><span class="label">Deck (TX atual)</span><span class="value" id="cfgIdB">--</span></div>
+          <div class="row"><span class="label">Pacotes perdidos</span><span class="value" id="lostB">--</span></div>
+          <div class="row"><span class="label">Chegada de pkt</span><span class="value" id="pktB">--</span></div>
+          <div class="row"><span class="label">Perda (janela 0,5s)</span><span class="value" id="lossB">--</span></div>
+          <div class="row"><span class="label">Underruns DMA</span><span class="value" id="undB">--</span></div>
+          <div class="row"><span class="label">Buffer DMA (uso médio)</span><span class="value" id="bufB">--</span></div>
+          <div class="row"><span class="label">Áudio (buf/0.5s)</span><span class="value" id="wrB">--</span></div>
+          <div class="row"><span class="label">Pico amostra</span><span class="value" id="pkB">--</span></div>
+          <div class="row"><span class="label">Erro I2S</span><span class="value" id="errB">--</span></div>
+          <div class="row"><span class="label">Tempo conectado</span><span class="value" id="upB">--</span></div>
+          <div class="row"><span class="label">Tom teste</span><span class="value" id="toneB">--</span></div>
+        </div>
       </div>
     </div>
-  </div>
+  </section>
 
-  <div class="card calib-card" style="margin-top:16px;">
-    <h2>Configuração TX <span style="color:#8b949e;font-weight:400;font-size:13px;">(via ESP-NOW, sem abrir caixas)</span></h2>
-    <div class="grid">
-      <div class="calib-block">
-        <h3>Trocar o deck da caixa</h3>
-        <div class="calib-line"><button class="btn small" onclick="sendCmd('DECK_ID 1')">Caixa do slot 1 → Deck B</button></div>
-        <div class="calib-line"><button class="btn small" onclick="sendCmd('DECK_ID 2')">Caixa do slot 2 → Deck A</button></div>
-        <div class="info-msg" style="margin-top:8px;font-size:11px;">Use o argumento extra para escolher: ex. <code>DECK_ID 1 1</code> mantém slot 1 como Deck A.</div>
+  <!-- ==================== CALIBRAÇÃO ==================== -->
+  <section id="view-calib" class="view">
+    <div class="inner">
+      <div class="card">
+        <h2>Calibração de velocidade <span style="color:#8b949e;font-weight:400;font-size:13px;">(vinil 33 1/3 → 33.333 rpm)</span></h2>
+        <div class="info-msg" style="margin-bottom:12px;">
+          Coloque o tocadisco do deck no pitch indicado (0%, +8% ou -8%), espere ~3s girando e clique no botão correspondente.
+          Depois clique em "Calcular". Use "Enviar via ESP-NOW" para gravar o novo multiplicador no TX sem cabo, ou copie o snippet.
+        </div>
+        <div class="grid" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+          <div class="calib-block">
+            <h3>Deck A <span class="aside">(TX_DECK_ID 1)</span></h3>
+            <div class="calib-line"><span class="label">RPM ao vivo</span><span class="live-rpm" id="liveRpm0">--</span></div>
+            <div class="calib-line"><span class="label">Multiplicador atual no TX</span><input id="calK0" type="number" step="0.0001" value="0.999"></div>
+            <div class="calib-line"><button class="btn small" onclick="captureCalib(0,0)">0%</button><span class="calib-val" id="calR0_0">--</span></div>
+            <div class="calib-line"><button class="btn small" onclick="captureCalib(0,1)">+8%</button><span class="calib-val" id="calR0_1">--</span></div>
+            <div class="calib-line"><button class="btn small" onclick="captureCalib(0,2)">-8%</button><span class="calib-val" id="calR0_2">--</span></div>
+            <div class="calib-line"><button class="btn small" onclick="calcCalib(0)">Calcular</button></div>
+            <div class="calib-line"><span class="label">Novo multiplicador</span><span class="calib-val good" id="calNew0">--</span></div>
+            <div class="calib-line"><span class="label">R+8/R0</span><span class="calib-val" id="calVp8_0">--</span></div>
+            <div class="calib-line"><span class="label">R-8/R0</span><span class="calib-val" id="calVm8_0">--</span></div>
+            <textarea class="calib-snippet" id="calSnip0" readonly placeholder="Capture e calcule para gerar o valor..."></textarea>
+            <div class="calib-line" style="margin-top:6px;"><button class="btn small" onclick="copyCalib(0)">Copiar snippet</button> <button class="btn small" onclick="sendCalibOta(0)">Enviar via ESP-NOW</button></div>
+          </div>
+          <div class="calib-block">
+            <h3>Deck B <span class="aside">(TX_DECK_ID 2)</span></h3>
+            <div class="calib-line"><span class="label">RPM ao vivo</span><span class="live-rpm" id="liveRpm1">--</span></div>
+            <div class="calib-line"><span class="label">Multiplicador atual no TX</span><input id="calK1" type="number" step="0.0001" value="0.9974"></div>
+            <div class="calib-line"><button class="btn small" onclick="captureCalib(1,0)">0%</button><span class="calib-val" id="calR1_0">--</span></div>
+            <div class="calib-line"><button class="btn small" onclick="captureCalib(1,1)">+8%</button><span class="calib-val" id="calR1_1">--</span></div>
+            <div class="calib-line"><button class="btn small" onclick="captureCalib(1,2)">-8%</button><span class="calib-val" id="calR1_2">--</span></div>
+            <div class="calib-line"><button class="btn small" onclick="calcCalib(1)">Calcular</button></div>
+            <div class="calib-line"><span class="label">Novo multiplicador</span><span class="calib-val good" id="calNew1">--</span></div>
+            <div class="calib-line"><span class="label">R+8/R0</span><span class="calib-val" id="calVp8_1">--</span></div>
+            <div class="calib-line"><span class="label">R-8/R0</span><span class="calib-val" id="calVm8_1">--</span></div>
+            <textarea class="calib-snippet" id="calSnip1" readonly placeholder="Capture e calcule para gerar o valor..."></textarea>
+            <div class="calib-line" style="margin-top:6px;"><button class="btn small" onclick="copyCalib(1)">Copiar snippet</button> <button class="btn small" onclick="sendCalibOta(1)">Enviar via ESP-NOW</button></div>
+          </div>
+        </div>
       </div>
-      <div class="grid">
-      <div class="calib-block">
-        <h3>Filtros Deck A</h3>
-        <div class="calib-line"><span class="label">alphaSlow</span><input id="cfgSlowA" type="number" step="0.01" value="0.75"></div>
-        <div class="calib-line"><span class="label">alphaFast</span><input id="cfgFastA" type="number" step="0.01" value="0.85"></div>
-        <div class="calib-line"><span class="label">threshold</span><input id="cfgThrA" type="number" step="0.05" value="0.30"></div>
-        <div class="calib-line"><button class="btn small" onclick="applyFilter(0)">Aplicar Deck A</button></div>
-      </div>
-      <div class="calib-block">
-        <h3>Filtros Deck B</h3>
-        <div class="calib-line"><span class="label">alphaSlow</span><input id="cfgSlowB" type="number" step="0.01" value="0.75"></div>
-        <div class="calib-line"><span class="label">alphaFast</span><input id="cfgFastB" type="number" step="0.01" value="0.85"></div>
-        <div class="calib-line"><span class="label">threshold</span><input id="cfgThrB" type="number" step="0.05" value="0.30"></div>
-        <div class="calib-line"><button class="btn small" onclick="applyFilter(1)">Aplicar Deck B</button></div>
+
+      <div class="card">
+        <h2>Configuração TX <span style="color:#8b949e;font-weight:400;font-size:13px;">(via ESP-NOW, sem abrir caixas)</span></h2>
+        <div class="grid" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+          <div class="calib-block">
+            <h3>Trocar o deck da caixa</h3>
+            <div class="calib-line"><button class="btn small" onclick="sendCmd('DECK_ID 1')">Caixa do slot 1 → Deck B</button></div>
+            <div class="calib-line"><button class="btn small" onclick="sendCmd('DECK_ID 2')">Caixa do slot 2 → Deck A</button></div>
+            <div class="info-msg" style="margin-top:8px;font-size:11px;">Use o argumento extra para escolher: ex. <code>DECK_ID 1 1</code> mantém slot 1 como Deck A.</div>
+          </div>
+          <div>
+            <div class="calib-block" style="margin-bottom:12px;">
+              <h3>Filtros Deck A</h3>
+              <div class="calib-line"><span class="label">alphaSlow</span><input id="cfgSlowA" type="number" step="0.01" value="0.50"></div>
+              <div class="calib-line"><span class="label">alphaFast</span><input id="cfgFastA" type="number" step="0.01" value="0.70"></div>
+              <div class="calib-line"><span class="label">threshold</span><input id="cfgThrA" type="number" step="0.05" value="0.15"></div>
+              <div class="calib-line"><button class="btn small" onclick="applyFilter(0)">Aplicar Deck A</button></div>
+            </div>
+            <div class="calib-block">
+              <h3>Filtros Deck B</h3>
+              <div class="calib-line"><span class="label">alphaSlow</span><input id="cfgSlowB" type="number" step="0.01" value="0.50"></div>
+              <div class="calib-line"><span class="label">alphaFast</span><input id="cfgFastB" type="number" step="0.01" value="0.70"></div>
+              <div class="calib-line"><span class="label">threshold</span><input id="cfgThrB" type="number" step="0.05" value="0.15"></div>
+              <div class="calib-line"><button class="btn small" onclick="applyFilter(1)">Aplicar Deck B</button></div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
-    </div>
-  </div>
-  </div>
-  </div>
+  </section>
 
-  <div class="log" id="log"></div>
-  <div class="info-msg" id="infoMsg">Clique em Conectar e selecione a porta do receptor (baud 115200). Funciona no Chrome/Edge.</div>
+  <!-- ==================== TESTES DE ÁUDIO ==================== -->
+  <section id="view-audio" class="view">
+    <div class="inner">
+      <div class="card">
+        <h2>Teste de DAC <span style="color:#8b949e;font-weight:400;font-size:13px;">(tom 1kHz)</span></h2>
+        <div class="test-block">
+          <h3>Deck A <span style="color:#8b949e;font-weight:400;font-size:12px;">(DAC/saída A)</span></h3>
+          <div class="test-line">
+            <button id="btnTestA" class="btn small">Testar DAC A</button>
+            <span id="toneStatusA" class="label">off</span>
+          </div>
+        </div>
+        <div class="test-block">
+          <h3>Deck B <span style="color:#8b949e;font-weight:400;font-size:12px;">(DAC/saída B)</span></h3>
+          <div class="test-line">
+            <button id="btnTestB" class="btn small">Testar DAC B</button>
+            <span id="toneStatusB" class="label">off</span>
+          </div>
+        </div>
+        <div class="info-msg" style="margin-bottom:8px;">
+          O tom é reproduzido por ~10s na saída correspondente (verifique na caixa e no mixer). Use o botão Parar para interromper antes.
+        </div>
+        <div class="test-line">
+          <button id="btnTestOff" class="btn danger small">Parar todos</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== WIFI ==================== -->
+  <section id="view-wifi" class="view">
+    <div class="inner">
+      <div class="card">
+        <h2>Canal Atual</h2>
+        <div class="channel-info">
+          <span class="label">Canal:</span>
+          <span class="channel-badge" id="currentChannel">--</span>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Trocar Canal</h2>
+        <div class="toolbar" style="margin-bottom:8px;">
+          <span class="label">Novo canal (1-13):</span>
+          <input id="chInput" type="number" min="1" max="13" value="12" style="width:80px;">
+          <button id="btnChannel" class="btn small">Aplicar</button>
+          <button id="btnChannelScan" class="btn small">Escanear redes</button>
+        </div>
+        <div class="info-msg">O scan busca o canal menos congestionado e salva no NVS.</div>
+        <div class="info-msg" style="margin-top:12px;">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:#e6edf3;">
+            <input type="checkbox" id="chAutoScroll" checked style="accent-color:#58a6ff;width:14px;height:14px;cursor:pointer;">
+            Autoscroll da telemetria
+          </label>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Log compartilhado -->
+  <div class="log-wrap">
+    <div class="log-head">
+      <span>Telemetria</span>
+    </div>
+    <div class="log" id="log"></div>
+  </div>
+  <div class="info-msg" id="infoMsg">Conecte na barra lateral e selecione a porta do receptor (baud 115200). Funciona no Chrome/Edge.</div>
 </div>
 
 <script>
@@ -286,6 +356,20 @@ let lastUpdate = 0;
 
 const $ = (id) => document.getElementById(id);
 
+const pageNames = { dashboard: 'RECEIVER MONITOR', calib: 'CALIBRAÇÃO', audio: 'TESTES DE ÁUDIO', wifi: 'WIFI' };
+
+function showSection(page) {
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  const el = $('view-' + page);
+  if (el) el.classList.add('active');
+  $('pageTitle').textContent = pageNames[page] || 'RECEIVER MONITOR';
+}
+window.onSectionChange = showSection;
+
+const initialPage = (window.location.hash || '#dashboard').slice(1);
+showSection(initialPage in pageNames ? initialPage : 'dashboard');
+
+// ------------------------- DASHBOARD / TELEMETRIA -------------------------
 const deckRpm = [0, 0];
 const deckAngle = [0, 0];
 const rpmHistory = [[], []];
@@ -293,13 +377,12 @@ const calibRpm = [[null, null, null], [null, null, null]];
 const discCanvases = [$('discA'), $('discB')];
 let lastAnimTime = 0;
 
-// Warning state tracking per deck for dashboard logging
 const warnState = [
   { rssi: false, loss: false },
   { rssi: false, loss: false }
 ];
 const RSSI_WARN_THRESHOLD = -75;
-const LOSS_WARN_THRESHOLD = 50; // matches RX LOST_PACKET_WARN_THRESHOLD
+const LOSS_WARN_THRESHOLD = 50;
 
 const logEl = $('log');
 
@@ -308,8 +391,8 @@ function logLine(text, cls) {
   line.className = 'line ' + (cls || '');
   line.textContent = text;
   logEl.appendChild(line);
-  while (logEl.children.length > 200) logEl.removeChild(logEl.firstChild);
-  logEl.scrollTop = logEl.scrollHeight;
+  while (logEl.children.length > 400) logEl.removeChild(logEl.firstChild);
+  if ($('chAutoScroll').checked) logEl.scrollTop = logEl.scrollHeight;
 }
 
 function rssiBars(rssi, container) {
@@ -374,7 +457,6 @@ function updateDeck(idx, fields, tcSecs, pktAgeMs, wrPerHalfSec, toneOn, i2sErr,
   const age = parseInt(pktAgeMs, 10);
   $('pkt' + (idx === 0 ? 'A' : 'B')).textContent = (connected && !isNaN(age) && age >= 0) ? age + ' ms' : '--';
 
-  // Dashboard-side warning logging (matches RX thresholds)
   if (connected) {
     const rssiWarn = rssi < RSSI_WARN_THRESHOLD;
     const lossWarn = lost > LOSS_WARN_THRESHOLD;
@@ -410,11 +492,26 @@ function updateDeck(idx, fields, tcSecs, pktAgeMs, wrPerHalfSec, toneOn, i2sErr,
   const toneEl = $('tone' + (idx === 0 ? 'A' : 'B'));
   toneEl.textContent = tone === 1 ? '1kHz ATIVO' : (tone === 0 ? 'off' : '--');
   toneEl.className = 'value' + (tone === 1 ? ' good' : '');
+
+  feedRpm(idx, connected, rpm);
 }
 
 function handleTelemetry(fields) {
   updateDeck(0, fields.slice(2, 7), fields[12], fields[14], fields[16], fields[18], fields[20], fields[22]);
   updateDeck(1, fields.slice(7, 12), fields[13], fields[15], fields[17], fields[19], fields[21], fields[23]);
+}
+
+// ------------------------- CALIBRAÇÃO -------------------------
+function feedRpm(idx, connected, rpm) {
+  const el = $('liveRpm' + idx);
+  if (!el) return;
+  if (connected && Math.abs(rpm) >= 0.5) {
+    el.textContent = rpm.toFixed(2) + ' rpm';
+    el.className = 'live-rpm good';
+  } else {
+    el.textContent = '--';
+    el.className = 'live-rpm';
+  }
 }
 
 const CALIB_BASE_RPM = 33.3333;
@@ -482,6 +579,30 @@ async function sendCalibOta(deckIdx) {
   logLine('Enviado RPM_MULTIPLIER=' + mult.toFixed(4) + ' ao deck ' + (deckIdx + 1) + ' via ESP-NOW...');
 }
 
+function sendCmd(cmd) {
+  sendSerialCmd(cmd);
+}
+
+function applyFilter(deckIdx) {
+  const suffix = deckIdx === 0 ? 'A' : 'B';
+  const slow = parseFloat($('cfgSlow' + suffix).value);
+  const fast = parseFloat($('cfgFast' + suffix).value);
+  const thr = parseFloat($('cfgThr' + suffix).value);
+  if (!(slow >= 0.05 && slow <= 0.99) || !(fast >= 0.05 && fast <= 0.99) || !(thr >= 0.01 && thr <= 10)) {
+    logLine('Filtros fora do intervalo aceito.', 'bad');
+    return;
+  }
+  sendSerialCmd('FILTER ' + (deckIdx + 1) + ' ' + slow.toFixed(2) + ' ' + fast.toFixed(2) + ' ' + thr.toFixed(2));
+}
+
+// ------------------------- ÁUDIO -------------------------
+function setToneStatus(idx, on) {
+  const el = idx === 0 ? $('toneStatusA') : $('toneStatusB');
+  el.textContent = on ? 'TOCO 1kHz' : 'off';
+  el.className = 'label ' + (on ? 'good' : '');
+}
+
+// ------------------------- OUTROS PARSERS -------------------------
 function handleAudioStat(fields) {
   const decks = [
     { name: 'A', count: fields[1], gap: fields[3], avg: fields[5], min: fields[6], undEl: 'undA', bufEl: 'bufA' },
@@ -490,8 +611,6 @@ function handleAudioStat(fields) {
   for (const d of decks) {
     const count = parseInt(d.count, 10);
     const gapUs = parseInt(d.gap, 10);
-    const avg = parseInt(d.avg, 10);
-    const min = parseInt(d.min, 10);
 
     const undEl = $(d.undEl);
     if (isNaN(count)) { undEl.textContent = '--'; undEl.className = 'value'; }
@@ -506,6 +625,8 @@ function handleAudioStat(fields) {
     audioStatPrev[d.undEl] = prev === null ? (isNaN(count) ? 0 : count) : Math.max(prev, isNaN(count) ? 0 : count);
 
     const bufEl = $(d.bufEl);
+    const avg = parseInt(d.avg, 10);
+    const min = parseInt(d.min, 10);
     if (isNaN(avg) || isNaN(min)) { bufEl.textContent = '--'; bufEl.className = 'value'; }
     else {
       bufEl.textContent = avg + '% (min ' + min + '%)';
@@ -524,23 +645,6 @@ function renderCfg(idx) {
   const s = cfgState[idx];
   const idEl = $('cfgId' + (idx === 0 ? 'A' : 'B'));
   idEl.textContent = s.deckId ? (s.deckId === 1 ? 'Deck A' : 'Deck B') : '--';
-  // cfgA/cfgB removidos do HTML - não exibe mais filtros no card
-}
-
-function sendCmd(cmd) {
-  sendSerialCmd(cmd);
-}
-
-function applyFilter(deckIdx) {
-  const suffix = deckIdx === 0 ? 'A' : 'B';
-  const slow = parseFloat($('cfgSlow' + suffix).value);
-  const fast = parseFloat($('cfgFast' + suffix).value);
-  const thr = parseFloat($('cfgThr' + suffix).value);
-  if (!(slow >= 0.05 && slow <= 0.99) || !(fast >= 0.05 && fast <= 0.99) || !(thr >= 0.01 && thr <= 10)) {
-    logLine('Filtros fora do intervalo aceito.', 'bad');
-    return;
-  }
-  sendSerialCmd('FILTER ' + (deckIdx + 1) + ' ' + slow.toFixed(2) + ' ' + fast.toFixed(2) + ' ' + thr.toFixed(2));
 }
 
 function handleLoss(fields) {
@@ -560,8 +664,22 @@ function handleLine(line) {
   line = line.trim();
   if (!line) return;
   if (line.startsWith('RF_CHANNEL,')) {
-    $('chBadge').textContent = 'Canal ' + line.split(',')[1];
-    $('chBadge').className = 'badge info';
+    const raw = line.split(',')[1].trim();
+    const chm = raw.match(/^(\d+)/);
+    if (chm) {
+      const ch = chm[1];
+      $('chBadge').textContent = 'Canal ' + ch;
+      $('chBadge').className = 'badge info';
+      $('currentChannel').textContent = ch;
+      $('currentChannel').className = 'channel-badge';
+      logLine('Canal atual: ' + ch, 'good');
+    } else {
+      logLine('RF_CHANNEL: ' + line, 'warn');
+    }
+    return;
+  }
+  if (line.startsWith('CHANNEL_ERR')) {
+    logLine('RX: ' + line, 'bad');
     return;
   }
   if (line.startsWith('AUDIO_STAT,')) {
@@ -607,10 +725,10 @@ function handleLine(line) {
     handleTelemetry(line.split(','));
     return;
   }
-  if (line.startsWith('TEST_')) {
-    logLine('RX: ' + line);
-    return;
-  }
+  if (line.startsWith('TEST_A ON')) { setToneStatus(0, true); logLine('Tom 1kHz ativo no DAC A.', 'good'); return; }
+  if (line.startsWith('TEST_B ON')) { setToneStatus(1, true); logLine('Tom 1kHz ativo no DAC B.', 'good'); return; }
+  if (line.startsWith('TEST_OFF')) { setToneStatus(0, false); setToneStatus(1, false); logLine('Tom desativado.', 'warn'); return; }
+  if (line.startsWith('TEST_')) { logLine('RX: ' + line); return; }
   if (line.startsWith('I2S_WRITE_ERR')) {
     logLine('RX: ' + line, 'bad');
     return;
@@ -641,6 +759,10 @@ function handleLine(line) {
     }
     return;
   }
+  if (line.startsWith('ERR_A') || line.startsWith('ERR_B')) {
+    logLine('RX: ' + line, 'bad');
+    return;
+  }
 }
 
 function drawDisc(idx) {
@@ -652,8 +774,6 @@ function drawDisc(idx) {
   const R = size / 2 - 10;
 
   ctx.clearRect(0, 0, size, size);
-
-  // Disco
   const grad = ctx.createRadialGradient(c, c, 4, c, c, R);
   grad.addColorStop(0, '#161b22');
   grad.addColorStop(1, '#0d1117');
@@ -665,7 +785,6 @@ function drawDisc(idx) {
   ctx.lineWidth = 2;
   ctx.stroke();
 
-  // Sulcos
   ctx.strokeStyle = '#21262d';
   ctx.lineWidth = 1;
   for (let i = 1; i <= 6; i++) {
@@ -675,7 +794,6 @@ function drawDisc(idx) {
     ctx.stroke();
   }
 
-  // Rótulo central
   ctx.beginPath();
   ctx.arc(c, c, R * 0.28, 0, Math.PI * 2);
   ctx.fillStyle = '#161b22';
@@ -684,7 +802,6 @@ function drawDisc(idx) {
   ctx.lineWidth = 2;
   ctx.stroke();
 
-  // Linha que gira (como um riscado no vinil)
   ctx.save();
   ctx.translate(c, c);
   ctx.rotate(deckAngle[idx]);
@@ -696,7 +813,6 @@ function drawDisc(idx) {
   ctx.stroke();
   ctx.restore();
 
-  // Furo central
   ctx.beginPath();
   ctx.arc(c, c, 4, 0, Math.PI * 2);
   ctx.fillStyle = '#0d1117';
@@ -717,6 +833,7 @@ function animate(time) {
 }
 requestAnimationFrame(animate);
 
+// ------------------------- SERIAL -------------------------
 async function readLoop() {
   const decoder = new TextDecoder();
   try {
@@ -742,11 +859,11 @@ async function connect() {
     await port.open({ baudRate: 115200 });
     reader = port.readable.getReader();
     writer = port.writable.getWriter();
-    $('btnConnect').textContent = 'Desconectar';
-    $('btnConnect').className = 'btn danger';
+    if (window.Sidebar) window.Sidebar.setConnectionStatus(true);
     $('linkBadge').textContent = 'Conectado';
     $('linkBadge').className = 'badge on';
     logLine('Porta serial aberta (115200 baud).');
+    sendSerialCmd('CHANNEL');
     readLoop();
   } catch (e) {
     logLine('Falha ao conectar: ' + e.message, 'bad');
@@ -774,27 +891,28 @@ async function disconnect() {
     if (reader) { await reader.cancel(); reader = null; }
     if (port) { await port.close(); port = null; }
   } catch (e) {}
-  $('btnConnect').textContent = 'Conectar';
-  $('btnConnect').className = 'btn';
+  if (window.Sidebar) window.Sidebar.setConnectionStatus(false);
   $('linkBadge').textContent = 'Desconectado';
   $('linkBadge').className = 'badge off';
   logLine('Porta serial fechada.');
 }
 
-$('btnConnect').addEventListener('click', () => {
-  if (port) disconnect();
-  else connect();
-});
-$('btnTestA').addEventListener('click', () => sendSerialCmd('TEST_A'));
-$('btnTestB').addEventListener('click', () => sendSerialCmd('TEST_B'));
-$('btnTestOff').addEventListener('click', () => sendSerialCmd('TEST_OFF'));
+window.connect = connect;
+window.disconnect = disconnect;
+
+// ------------------------- UI LISTENERS -------------------------
 $('btnUptime').addEventListener('click', () => sendSerialCmd('UPTIME'));
+
+$('btnTestA').addEventListener('click', () => { setToneStatus(0, false); $('toneStatusB').className = 'label'; sendSerialCmd('TEST_A'); });
+$('btnTestB').addEventListener('click', () => { setToneStatus(1, false); $('toneStatusA').className = 'label'; sendSerialCmd('TEST_B'); });
+$('btnTestOff').addEventListener('click', () => sendSerialCmd('TEST_OFF'));
+
 $('btnChannel').addEventListener('click', () => {
   const ch = parseInt($('chInput').value, 10);
   if (!(ch >= 1 && ch <= 13)) { logLine('Canal inválido — use 1 a 13.', 'bad'); return; }
   sendSerialCmd('CHANNEL ' + ch);
 });
-$('btnChannelScan').addEventListener('click', () => { logLine('Escaneando canais...'); sendSerialCmd('SCAN'); });
+$('btnChannelScan').addEventListener('click', () => { logLine('Escaneando melhor canal...'); sendSerialCmd('SCAN'); });
 </script>
 </body>
 </html>
