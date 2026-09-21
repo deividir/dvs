@@ -23,9 +23,9 @@
 // --- ALERTA DE SINAL (LEDs dos decks) ---
 // LED solido = link ok; piscando rapido = sinal fraco (RSSI) ou perda de pacotes
 #define RSSI_WARN_THRESHOLD_DBM -75
-#define LOST_PACKET_WARN_THRESHOLD 20
+#define LOST_PACKET_WARN_THRESHOLD 50
 #define WARN_BLINK_MS 100
-#define WARN_HOLD_MS 2000
+#define WARN_HOLD_MS 500
 
 #define DAC_A_BCK_PIN   2
 #define DAC_A_LRCK_PIN  11

@@ -293,6 +293,14 @@ const calibRpm = [[null, null, null], [null, null, null]];
 const discCanvases = [$('discA'), $('discB')];
 let lastAnimTime = 0;
 
+// Warning state tracking per deck for dashboard logging
+const warnState = [
+  { rssi: false, loss: false },
+  { rssi: false, loss: false }
+];
+const RSSI_WARN_THRESHOLD = -75;
+const LOSS_WARN_THRESHOLD = 50; // matches RX LOST_PACKET_WARN_THRESHOLD
+
 const logEl = $('log');
 
 function logLine(text, cls) {
@@ -365,6 +373,26 @@ function updateDeck(idx, fields, tcSecs, pktAgeMs, wrPerHalfSec, toneOn, i2sErr,
 
   const age = parseInt(pktAgeMs, 10);
   $('pkt' + (idx === 0 ? 'A' : 'B')).textContent = (connected && !isNaN(age) && age >= 0) ? age + ' ms' : '--';
+
+  // Dashboard-side warning logging (matches RX thresholds)
+  if (connected) {
+    const rssiWarn = rssi < RSSI_WARN_THRESHOLD;
+    const lossWarn = lost > LOSS_WARN_THRESHOLD;
+    const deckLabel = idx === 0 ? 'Deck A' : 'Deck B';
+
+    if (rssiWarn && !warnState[idx].rssi) {
+      logLine(deckLabel + ': LED warning — RSSI fraco (' + rssi + ' dBm < ' + RSSI_WARN_THRESHOLD + ')', 'warn');
+      warnState[idx].rssi = true;
+    } else if (!rssiWarn && warnState[idx].rssi) {
+      warnState[idx].rssi = false;
+    }
+    if (lossWarn && !warnState[idx].loss) {
+      logLine(deckLabel + ': LED warning — perda de pacotes alta (' + lost + ' > ' + LOSS_WARN_THRESHOLD + ')', 'warn');
+      warnState[idx].loss = true;
+    } else if (!lossWarn && warnState[idx].loss) {
+      warnState[idx].loss = false;
+    }
+  }
 
   const wr = parseInt(wrPerHalfSec, 10);
   $('wr' + (idx === 0 ? 'A' : 'B')).textContent = (!isNaN(wr) && wr >= 0) ? wr : '--';
