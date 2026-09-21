@@ -18,7 +18,7 @@
 // ============ DEFINA O DECK DESTA PLACA ============
 // TX_DECK_ID: 1 = Deck A (deck 1), 2 = Deck B (deck 2)
 // Para gravar a placa do deck 2, mude para 2 e compile.
-#define TX_DECK_ID 1
+#define TX_DECK_ID 2
 // ===================================================
 #define DEFAULT_DECK_ID TX_DECK_ID
 uint8_t deckId = DEFAULT_DECK_ID;
@@ -578,8 +578,9 @@ void setup() {
   Serial.printf("FILTERS_ATIVOS slow=%.3f fast=%.3f thr=%.3f\n", ALPHA_SLOW, ALPHA_FAST, FAST_THRESHOLD_RPM);
   setupEspNow();
   autoCalibrateGyroZ();
+  randomSeed(micros() ^ (deckId << 16)); // seed diferente por deck
   setOnboardLed(false);
-  blinkOnboardLed(deckId == 1 ? 1 : 2); // anuncia: Deck A ou B (NVS pode sobrepor o define)
+  blinkOnboardLed(deckId == 1 ? 1 : 2);
   nextSendMicros = micros();
 }
 
@@ -671,6 +672,9 @@ void loop() {
   packet.batteryPct = batteryLevelPct;
   packet.seq = sequenceNumber++;
   packet.timestampMicros = now;
+
+  // Jitter aleatorio 0-4ms evita colisao entre 2 TXs no mesmo canal (200Hz = 5ms)
+  delay(random(0, 5));
 
   esp_now_send(receiverMAC, (uint8_t *)&packet, sizeof(packet));
 

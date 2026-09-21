@@ -177,7 +177,6 @@
       <div class="row"><span class="label">Buffer DMA (uso médio)</span><span class="value" id="bufA">--</span></div>
       <div class="row"><span class="label">Perda (janela 0,5s)</span><span class="value" id="lossA">--</span></div>
       <div class="row"><span class="label">Deck (TX atual)</span><span class="value" id="cfgIdA">--</span></div>
-      <div class="row"><span class="label">Filtros TX (S/F/T)</span><span class="value" id="cfgA">--</span></div>
       <div class="row"><span class="label">Tom teste</span><span class="value" id="toneA">--</span></div>
     </div>
 
@@ -199,7 +198,6 @@
       <div class="row"><span class="label">Buffer DMA (uso médio)</span><span class="value" id="bufB">--</span></div>
       <div class="row"><span class="label">Perda (janela 0,5s)</span><span class="value" id="lossB">--</span></div>
       <div class="row"><span class="label">Deck (TX atual)</span><span class="value" id="cfgIdB">--</span></div>
-      <div class="row"><span class="label">Filtros TX (S/F/T)</span><span class="value" id="cfgB">--</span></div>
       <div class="row"><span class="label">Tom teste</span><span class="value" id="toneB">--</span></div>
     </div>
   </div>
@@ -254,13 +252,22 @@
         <div class="calib-line"><button class="btn small" onclick="sendCmd('DECK_ID 2')">Caixa do slot 2 → Deck A</button></div>
         <div class="info-msg" style="margin-top:8px;font-size:11px;">Use o argumento extra para escolher: ex. <code>DECK_ID 1 1</code> mantém slot 1 como Deck A.</div>
       </div>
+      <div class="grid">
       <div class="calib-block">
-        <h3>Filtros (latência do scratch)</h3>
-        <div class="calib-line"><span class="label">alphaSlow</span><input id="cfgSlow" type="number" step="0.01" value="0.75"></div>
-        <div class="calib-line"><span class="label">alphaFast</span><input id="cfgFast" type="number" step="0.01" value="0.85"></div>
-        <div class="calib-line"><span class="label">threshold</span><input id="cfgThr" type="number" step="0.05" value="0.30"></div>
-        <div class="calib-line"><button class="btn small" onclick="applyFilter()">Aplicar a ambos os decks</button></div>
+        <h3>Filtros Deck A</h3>
+        <div class="calib-line"><span class="label">alphaSlow</span><input id="cfgSlowA" type="number" step="0.01" value="0.75"></div>
+        <div class="calib-line"><span class="label">alphaFast</span><input id="cfgFastA" type="number" step="0.01" value="0.85"></div>
+        <div class="calib-line"><span class="label">threshold</span><input id="cfgThrA" type="number" step="0.05" value="0.30"></div>
+        <div class="calib-line"><button class="btn small" onclick="applyFilter(0)">Aplicar Deck A</button></div>
       </div>
+      <div class="calib-block">
+        <h3>Filtros Deck B</h3>
+        <div class="calib-line"><span class="label">alphaSlow</span><input id="cfgSlowB" type="number" step="0.01" value="0.75"></div>
+        <div class="calib-line"><span class="label">alphaFast</span><input id="cfgFastB" type="number" step="0.01" value="0.85"></div>
+        <div class="calib-line"><span class="label">threshold</span><input id="cfgThrB" type="number" step="0.05" value="0.30"></div>
+        <div class="calib-line"><button class="btn small" onclick="applyFilter(1)">Aplicar Deck B</button></div>
+      </div>
+    </div>
     </div>
   </div>
   </div>
@@ -498,15 +505,16 @@ function sendCmd(cmd) {
   sendSerialCmd(cmd);
 }
 
-function applyFilter() {
-  const slow = parseFloat($('cfgSlow').value);
-  const fast = parseFloat($('cfgFast').value);
-  const thr = parseFloat($('cfgThr').value);
+function applyFilter(deckIdx) {
+  const suffix = deckIdx === 0 ? 'A' : 'B';
+  const slow = parseFloat($('cfgSlow' + suffix).value);
+  const fast = parseFloat($('cfgFast' + suffix).value);
+  const thr = parseFloat($('cfgThr' + suffix).value);
   if (!(slow >= 0.05 && slow <= 0.99) || !(fast >= 0.05 && fast <= 0.99) || !(thr >= 0.01 && thr <= 10)) {
     logLine('Filtros fora do intervalo aceito.', 'bad');
     return;
   }
-  sendSerialCmd('FILTER ' + slow.toFixed(2) + ' ' + fast.toFixed(2) + ' ' + thr.toFixed(2));
+  sendSerialCmd('FILTER ' + (deckIdx + 1) + ' ' + slow.toFixed(2) + ' ' + fast.toFixed(2) + ' ' + thr.toFixed(2));
 }
 
 function handleLoss(fields) {

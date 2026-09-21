@@ -512,13 +512,20 @@ void handleSerialCommand() {
           Serial.printf("DECK_ID_SENT slot=%d newId=%d\n", fromSlot, toId);
         }
       } else if (cmdLine.startsWith("FILTER")) {
-        float slow = 0.0f, fast = 0.0f, thr = 0.0f;
-        int n = sscanf(cmdLine.c_str(), "FILTER %f %f %f", &slow, &fast, &thr);
-        if (n != 3 || slow < 0.05f || slow > 0.99f || fast < 0.05f || fast > 0.99f || thr < 0.01f || thr > 10.0f) {
-          Serial.println("CFG_ERR: use FILTER <alphaSlow 0.05-0.99> <alphaFast 0.05-0.99> <threshold 0.01-10.0>");
+        int deck = 0; float slow = 0, fast = 0, thr = 0;
+        int n = sscanf(cmdLine.c_str(), "FILTER %d %f %f %f", &deck, &slow, &fast, &thr);
+        bool perDeck = (n == 4 && (deck == 1 || deck == 2));
+        if (!perDeck) {
+          n = sscanf(cmdLine.c_str(), "FILTER %f %f %f", &slow, &fast, &thr);
+        }
+        if (n != (perDeck ? 4 : 3) || slow < 0.05f || slow > 0.99f ||
+            fast < 0.05f || fast > 0.99f || thr < 0.01f || thr > 10.0f) {
+          Serial.println("CFG_ERR: use FILTER [<deck 1|2>] <alphaSlow> <alphaFast> <threshold>");
         } else {
           uint8_t sent = 0;
-          for (uint8_t d = 1; d <= 2; d++) {
+          uint8_t startDeck = perDeck ? (uint8_t)deck : 1;
+          uint8_t endDeck = perDeck ? (uint8_t)deck : 2;
+          for (uint8_t d = startDeck; d <= endDeck; d++) {
             uint8_t macCopy[6];
             portENTER_CRITICAL(&stateMux);
             uint32_t last = deckStates[d - 1].lastSeenMillis;
