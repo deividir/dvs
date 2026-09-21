@@ -524,9 +524,7 @@ function renderCfg(idx) {
   const s = cfgState[idx];
   const idEl = $('cfgId' + (idx === 0 ? 'A' : 'B'));
   idEl.textContent = s.deckId ? (s.deckId === 1 ? 'Deck A' : 'Deck B') : '--';
-  const fEl = $('cfg' + (idx === 0 ? 'A' : 'B'));
-  if (s.slow === null || s.fast === null || s.thr === null) fEl.textContent = '--';
-  else fEl.textContent = s.slow.toFixed(2) + '/' + s.fast.toFixed(2) + '/' + s.thr.toFixed(2);
+  // cfgA/cfgB removidos do HTML - não exibe mais filtros no card
 }
 
 function sendCmd(cmd) {
