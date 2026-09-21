@@ -10,7 +10,6 @@
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
-#include <esp_sleep.h>
 #include <Preferences.h>
 #include <Wire.h>
 #include <math.h>
@@ -35,15 +34,6 @@ uint8_t deckId = DEFAULT_DECK_ID;
 #define HANDSHAKE_TIMEOUT_MS 5000
 
 #define PROTOCOL_VERSION 2
-
-// Desligamento automatico por inatividade (economia de bateria).
-// Se o prato ficar parado (sem movimento medido no giroscopio) por
-// IDLE_POWER_OFF_MS, o TX entra em deep sleep (REGULADOR AMS1117 da
-// placa consome ~5mA mesmo dormindo; ~8 dias em 1000mAh).
-// Wake: o botao RESET do board (pino EN) religa de qualquer estado.
-#define IDLE_POWER_OFF_MS 600000UL   // 10 minutos sem movimento
-#define IDLE_MOTION_DPS 2.0f         // abaixo disso (dps ja corrigido) = parado
-#define IDLE_CHECK_MS 1000           // checa uma vez por segundo
 
 #define MSG_HELLO 1
 #define MSG_WELCOME 2
@@ -97,8 +87,6 @@ int16_t hopIndex = -1;  // -1 = ainda nao comecou a pular
 uint32_t lastHopMillis = 0;
 uint32_t lastPairHelloMillis = 0;
 bool wasReceiverReady = false;
-uint32_t lastMotionMillis = 0;
-uint32_t lastIdleCheckMillis = 0;
 
 // Filtro assimetrico (fast attack / slow release):
 // - ALPHA_SLOW suaviza ruido durante giro estavel.
@@ -381,29 +369,8 @@ void autoTrimGyroOffset(float dps) {
   }
 }
 
-// Entra em deep sleep. Wake sera via botao RESET do board (pino EN),
-// que religa de qualquer estado (power-on reset fisico, sem software).
-void enterDeepSleep() {
-  Serial.println("OCIOSO: desligando (deep sleep)...");
-  setOnboardLed(false);
-  esp_deep_sleep_start();
-}
-
-// Desliga automaticamente se nao houver movimento por IDLE_POWER_OFF_MS.
-void checkIdlePowerOff() {
-  uint32_t now = millis();
-  if (now - lastIdleCheckMillis < IDLE_CHECK_MS) return;
-  lastIdleCheckMillis = now;
-  float dps = 0.0f;
-  if (!readGyroZDps(&dps)) return;
-  if (fabsf(dps - gyroOffsetZ) > IDLE_MOTION_DPS) {
-    lastMotionMillis = now;
-    return;
-  }
-  if (now - lastMotionMillis >= IDLE_POWER_OFF_MS) {
-    enterDeepSleep();
-  }
-}
+// Sem desligamento automatico por inatividade: o TX fica ligado enquanto
+// tiver alimentacao (bateria ou USB), como um controle de vinil comum.
 
 static inline void sampleBattery() {
 #if BATT_PIN >= 0
@@ -465,7 +432,10 @@ void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *dataPtr, int len
   dvs_packet incoming;
   memcpy(&incoming, dataPtr, sizeof(incoming));
 
+  Serial.printf("TX_RX_PKT: type=%u deckId=%u ver=%u ch=%u\n", incoming.msgType, incoming.deckId, incoming.version, activeChannel);
+
   if (incoming.version != PROTOCOL_VERSION || incoming.deckId != deckId) {
+    Serial.printf("TX_FILTERED: ver mismatch(%u!=%u) or deckId(%u!=%u)\n", incoming.version, PROTOCOL_VERSION, incoming.deckId, deckId);
     return;
   }
 
@@ -473,6 +443,9 @@ void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *dataPtr, int len
     receiverReady = true;
     lastReceiverReplyMillis = millis();
     setOnboardLed(true);
+    if (incoming.msgType == MSG_WELCOME) {
+      Serial.printf("TX_WELCOME_OK ch=%u\n", activeChannel);
+    }
   } else if (incoming.msgType == MSG_CALIB) {
     float newMult = (float)incoming.rpmCenti / 10000.0f;
     if (newMult > 0.5f && newMult < 2.0f) {
@@ -611,8 +584,6 @@ void setup() {
 }
 
 void loop() {
-  // Desligamento por inatividade (antes de qualquer guard, vale em todos os estados).
-  checkIdlePowerOff();
 
   handleBootButton();
 

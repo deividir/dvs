@@ -258,7 +258,11 @@ void sendParamCommand(uint8_t deckId, uint8_t paramId, int16_t value) {
 void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *dataPtr, int len) {
   if (len != sizeof(dvs_packet)) return;
   dvs_packet packet; memcpy(&packet, dataPtr, sizeof(packet));
-  if (packet.version != PROTOCOL_VERSION || packet.deckId < 1 || packet.deckId > 2) return;
+  if (packet.version != PROTOCOL_VERSION || packet.deckId < 1 || packet.deckId > 2) {
+    Serial.printf("RX_FILTERED: ver=%u deckId=%u\n", packet.version, packet.deckId);
+    return;
+  }
+  Serial.printf("RX_PKT: type=%u deckId=%u ver=%u rssi=%d\n", packet.msgType, packet.deckId, packet.version, (info->rx_ctrl != NULL) ? (int8_t)info->rx_ctrl->rssi : -127);
   if (packet.msgType == MSG_CFG_ACK) {
     const char *name = "?";
     switch (packet.batteryPct) {
@@ -274,7 +278,10 @@ void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *dataPtr, int len
   const uint8_t *sourceMac = info->src_addr; uint8_t deckIndex = packet.deckId - 1; deck_state *state = &deckStates[deckIndex];
   int8_t rssi = (info->rx_ctrl != NULL) ? (int8_t)info->rx_ctrl->rssi : -127;
   portENTER_CRITICAL(&stateMux); memcpy(state->mac, sourceMac, 6); state->lastSeenMillis = millis(); state->rssi = rssi; state->batteryPct = packet.batteryPct; portEXIT_CRITICAL(&stateMux);
-  if (packet.msgType == MSG_HELLO) { portENTER_CRITICAL(&stateMux); memcpy(pendingWelcomeMac[deckIndex], sourceMac, 6); pendingWelcomeDeck[deckIndex] = packet.deckId; hasPendingWelcome[deckIndex] = true; portEXIT_CRITICAL(&stateMux); return; }
+  if (packet.msgType == MSG_HELLO) {
+    Serial.printf("RX_HELLO: deckId=%u mac=%02X:%02X:%02X:%02X:%02X:%02X ch=%u\n", packet.deckId, sourceMac[0], sourceMac[1], sourceMac[2], sourceMac[3], sourceMac[4], sourceMac[5], activeEspNowChannel);
+    portENTER_CRITICAL(&stateMux); memcpy(pendingWelcomeMac[deckIndex], sourceMac, 6); pendingWelcomeDeck[deckIndex] = packet.deckId; hasPendingWelcome[deckIndex] = true; portEXIT_CRITICAL(&stateMux); return;
+  }
   if (packet.msgType == MSG_CALIB_ACK) { Serial.printf("CALIB_ACK deck=%d M=%.4f\n", packet.deckId, (float)packet.rpmCenti / 10000.0f); return; }
   if (packet.msgType != MSG_DATA) return;
   uint16_t lost = 0; portENTER_CRITICAL(&stateMux); if (state->seen) { uint32_t seqDelta = packet.seq - state->lastSeq; if (seqDelta > 1) lost = (uint16_t)min(seqDelta - 1, 65535UL); } if (!state->seen) state->firstSeenMillis = millis(); state->seen = true; state->rpmCenti = packet.rpmCenti; state->lastSeq = packet.seq; state->packetCount++; state->lostPackets += lost; state->lastGap = lost; state->winReceived++; state->winMissed += lost; portEXIT_CRITICAL(&stateMux);
@@ -439,7 +446,7 @@ void audioTask(void *param) { audio_deck_state *deck = (audio_deck_state *)param
   } }
 
 void serviceEspNowControl() {
-  for (uint8_t i = 0; i < 2; i++) { uint8_t welcomeMacCopy[6]; uint8_t welcomeDeckCopy = 0; bool shouldSendWelcome = false; portENTER_CRITICAL(&stateMux); if (hasPendingWelcome[i]) { memcpy(welcomeMacCopy, pendingWelcomeMac[i], 6); welcomeDeckCopy = pendingWelcomeDeck[i]; hasPendingWelcome[i] = false; shouldSendWelcome = true; } portEXIT_CRITICAL(&stateMux); if (shouldSendWelcome) sendControlMessage(welcomeMacCopy, welcomeDeckCopy, MSG_WELCOME); }
+  for (uint8_t i = 0; i < 2; i++) { uint8_t welcomeMacCopy[6]; uint8_t welcomeDeckCopy = 0; bool shouldSendWelcome = false; portENTER_CRITICAL(&stateMux); if (hasPendingWelcome[i]) { memcpy(welcomeMacCopy, pendingWelcomeMac[i], 6); welcomeDeckCopy = pendingWelcomeDeck[i]; hasPendingWelcome[i] = false; shouldSendWelcome = true; } portEXIT_CRITICAL(&stateMux); if (shouldSendWelcome) { Serial.printf("RX_WELCOME_TX: deckId=%u mac=%02X:%02X:%02X:%02X:%02X:%02X ch=%u\n", welcomeDeckCopy, welcomeMacCopy[0], welcomeMacCopy[1], welcomeMacCopy[2], welcomeMacCopy[3], welcomeMacCopy[4], welcomeMacCopy[5], activeEspNowChannel); sendControlMessage(welcomeMacCopy, welcomeDeckCopy, MSG_WELCOME); } }
   uint32_t nowMillis = millis(); for (uint8_t i = 0; i < 2; i++) { uint8_t macCopy[6]; bool shouldPing = false; portENTER_CRITICAL(&stateMux); deck_state *state = &deckStates[i]; if (state->lastSeenMillis != 0 && nowMillis - state->lastSeenMillis <= DECK_TIMEOUT_MS && nowMillis - state->lastPingMillis >= PING_INTERVAL_MS) { memcpy(macCopy, state->mac, 6); state->lastPingMillis = nowMillis; shouldPing = true; } portEXIT_CRITICAL(&stateMux); if (shouldPing) sendControlMessage(macCopy, i + 1, MSG_PING); }
 }
 
@@ -644,6 +651,10 @@ void setup() {
 #endif
   selectCleanChannel();
   setupEspNow();
+  // MAC valido apos WiFi.stack up (WiFi.macAddress funciona apos scan/init).
+  uint8_t mac[6];
+  WiFi.macAddress(mac);
+  Serial.printf("MAC: %02X:%02X:%02X:%02X:%02X:%02X\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
   // Reaplica o clock I2S nas duas portas apos o WiFi iniciar (PLL compartilhado).
   // IMPORTANTE: setar a porta 1 por ultimo corrompe o clock da porta 0 no ESP32-S3
   // com o driver legado. Ordem invertida: porta 0 (deck A) e a ultima a ser setada.
