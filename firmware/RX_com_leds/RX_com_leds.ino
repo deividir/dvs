@@ -77,6 +77,19 @@
 #define SIN_COS_TABLE_SIZE 1024
 #define WRAP_GAP_MS 400
 
+// Fade de inicio (anti-"pio"): apos o toca-discos comecar a girar, o volume do
+// timecode sobe de 0 a 100% em START_FADE_MS. Configuravel via comando FADE
+// (0 desliga) e persistido em NVS. Custo: 1 millis() + 1 mul/somente no fade.
+#define START_FADE_MS_DEFAULT 200
+uint16_t gStartFadeMs = START_FADE_MS_DEFAULT;
+
+// Waveform para o dashboard (modo 8): o audioTask captura WAVE_POINTS amostras
+// por janela e o loop() emite 1 linha WAVE por tick (sem bloquear o audio).
+#define WAVE_POINTS 64
+#define WAVE_INTERVAL_MS 1000
+int16_t waveSnapshot[2][WAVE_POINTS];
+volatile bool waveReady[2] = {false, false};
+
 // Tom de teste de DAC (comando serial TEST_A / TEST_B pelo dashboard).
 #define TEST_TONE_FREQ_HZ 1000
 #define TEST_TONE_MS 10000
@@ -148,6 +161,9 @@ typedef struct {
   uint16_t testToneFreqHz;
   uint32_t tonePhase;
   float volume;
+  uint32_t fadeStartMillis;
+  uint32_t waveNextCaptureMillis;
+  uint16_t wavePos;
 } audio_deck_state;
 
 deck_state deckStates[2];
@@ -320,6 +336,22 @@ void saveLedBrightnessNvs(uint8_t b) {
   prefs.end();
 }
 
+// Fade de inicio (ms) persistido em NVS: sobrevive a reboots.
+uint16_t loadStartFadeNvs() {
+  Preferences prefs;
+  prefs.begin("dvs", true);
+  int saved = prefs.getInt("fadeMs", -1);
+  prefs.end();
+  if (saved >= 0 && saved <= 1000) return (uint16_t)saved;
+  return START_FADE_MS_DEFAULT;
+}
+void saveStartFadeNvs(uint16_t ms) {
+  Preferences prefs;
+  prefs.begin("dvs", false);
+  prefs.putInt("fadeMs", (int)ms);
+  prefs.end();
+}
+
 // Volume por deck (0.0-1.0) persistido em NVS: sobrevive a reboots.
 float loadDeckVolumeNvs(int deckIndex) {
   Preferences prefs;
@@ -451,6 +483,7 @@ void audioTask(void *param) { audio_deck_state *deck = (audio_deck_state *)param
       deck->calibStableStart = 0;
       deck->filteredRpm = 0.0f;
     } else {
+      if (deck->calibrating && gStartFadeMs > 0) deck->fadeStartMillis = millis();
       deck->calibStableStart = 0;
       deck->calibrating = false;
       float delta = targetRpm - deck->filteredRpm;
@@ -458,10 +491,25 @@ void audioTask(void *param) { audio_deck_state *deck = (audio_deck_state *)param
       deck->filteredRpm += delta * alpha;
     }
     for (int i = 0; i < DMA_BUF_LEN; i++) { int16_t left, right; if (millis() < deck->testToneUntil) { deck->tonePhase += (uint32_t)((float)deck->testToneFreqHz * 65536.0f / SAMPLE_RATE); int16_t tone = (int16_t)((float)sinTable[(deck->tonePhase >> 6) & (SIN_COS_TABLE_SIZE - 1)] * TEST_TONE_AMPLITUDE); left = tone; right = tone; } else if (stopped) { left = 0; right = 0; } else { renderCv02Sample(deck, deck->filteredRpm, &left, &right); } buffer[i * 2] = left; buffer[i * 2 + 1] = right; }
-    // Volume do deck (0.0-1.0) aplicado no buffer final, cubrindo timecode e tom de teste.
-    if (deck->volume < 0.999f) {
+    // Waveform (modo 8): captura 1 amostra por ~15.6ms ate completar WAVE_POINTS
+    // (~1s). O loop() emite em baixa prioridade, sem bloquear o audio.
+    if (!stopped && deck->wavePos < WAVE_POINTS && millis() >= deck->waveNextCaptureMillis) {
+      waveSnapshot[deckIdx][deck->wavePos] = buffer[(DMA_BUF_LEN - 1) * 2];
+      deck->wavePos++;
+      deck->waveNextCaptureMillis += WAVE_INTERVAL_MS / WAVE_POINTS;
+      if (deck->wavePos >= WAVE_POINTS) { waveReady[deckIdx] = true; deck->wavePos = 0; }
+    }
+    // Volume do deck + fade de inicio (envelope 0->1 em START_FADE_MS).
+    float fadeGain = 1.0f;
+    if (deck->fadeStartMillis && gStartFadeMs > 0) {
+      uint32_t elapsed = millis() - deck->fadeStartMillis;
+      if (elapsed < (uint32_t)gStartFadeMs) fadeGain = (float)elapsed / (float)gStartFadeMs;
+      else deck->fadeStartMillis = 0;
+    }
+    if (deck->volume < 0.999f || fadeGain < 1.0f) {
+      float gain = deck->volume * fadeGain;
       for (int v = 0; v < DMA_BUF_LEN * 2; v++) {
-        int32_t scaled = (int32_t)((float)buffer[v] * deck->volume);
+        int32_t scaled = (int32_t)((float)buffer[v] * gain);
         if (scaled > 32767) scaled = 32767;
         if (scaled < -32768) scaled = -32768;
         buffer[v] = (int16_t)scaled;
@@ -650,6 +698,21 @@ void handleSerialCommand() {
 if (valid) Serial.printf("VOLUME_OK,%.3f,%.3f\n", audioDecks[0].volume, audioDecks[1].volume);
           else Serial.println("VOLUME_ERR: use VOLUME [<deck 1|2>] <0.00-1.00>");
         }
+      } else if (cmdLine.startsWith("FADE")) {
+        String arg = cmdLine.substring(5);
+        arg.trim();
+        if (arg.length() == 0) {
+          Serial.printf("FADE_OK,%d\n", (int)gStartFadeMs);
+        } else {
+          int ms = arg.toInt();
+          if (ms >= 0 && ms <= 1000) {
+            gStartFadeMs = (uint16_t)ms;
+            saveStartFadeNvs(gStartFadeMs);
+            Serial.printf("FADE_OK,%d\n", (int)gStartFadeMs);
+          } else {
+            Serial.println("FADE_ERR: use 0-1000 (ms)");
+          }
+        }
       }
       cmdLine = "";
     } else if (c != '\r') {
@@ -755,6 +818,7 @@ void setup() {
   ledBrightness = (uint8_t)loadLedBrightnessNvs();
   audioDecks[0].volume = loadDeckVolumeNvs(0);
   audioDecks[1].volume = loadDeckVolumeNvs(1);
+  gStartFadeMs = loadStartFadeNvs();
   ledPwmOk[0] = ledcAttach(LED_DECK_A, 5000, 8);
   ledPwmOk[1] = ledcAttach(LED_DECK_B, 5000, 8);
   if (!ledPwmOk[0]) pinMode(LED_DECK_A, OUTPUT);
@@ -797,6 +861,17 @@ void loop() {
   handleSerialCommand();
   serviceEspNowControl();
   sendTelemetry();
+
+  // Waveform (modo 8): emite WAVE,<deck>,v0..v63 quando um snapshot ficou pronto.
+  // Em baixa prioridade no loop() para nunca atrasar os tasks de audio.
+  for (uint8_t d = 0; d < 2; d++) {
+    if (waveReady[d]) {
+      portENTER_CRITICAL(&stateMux); waveReady[d] = false; portEXIT_CRITICAL(&stateMux);
+      Serial.printf("WAVE,%u", d + 1);
+      for (uint16_t w = 0; w < WAVE_POINTS; w++) Serial.printf(",%d", (int)waveSnapshot[d][w]);
+      Serial.println();
+    }
+  }
 
   // Controle dos LEDs Azul (solido = ok, piscando = sinal fraco/perda, apagado = sem deck)
   updateDeckLed(0, LED_DECK_A);

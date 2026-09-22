@@ -80,6 +80,7 @@
   .bad { color: #f85149; }
   .info-msg { color: #8b949e; font-size: 13px; margin-top: 8px; }
   .disc { display: block; margin: 8px auto; }
+  .wave { display: block; margin: 4px auto 10px; width: 100%; height: auto; border: 1px solid #21262d; border-radius: 6px; background: #0d1117; }
   .deck-home {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -186,6 +187,7 @@
       <div class="card">
         <h2><span class="dot gray" id="dotA"></span> Deck <span class="deck">A</span></h2>
         <canvas class="disc" id="discA" width="120" height="120"></canvas>
+        <canvas class="wave" id="waveA" width="320" height="110"></canvas>
         <div class="deck-grid">
           <div class="row"><span class="label">Sinal (RSSI)</span><span class="value" id="rssiA">--<span class="rssi-bars" id="barsA"></span></span></div>
           <div class="row"><span class="label">Bateria TX</span><span class="value" id="battA">--<span class="battery-bar"><span class="battery-fill" id="battFillA" style="width:0%"></span></span></span></div>
@@ -208,6 +210,7 @@
       <div class="card">
         <h2><span class="dot gray" id="dotB"></span> Deck <span class="deck">B</span></h2>
         <canvas class="disc" id="discB" width="120" height="120"></canvas>
+        <canvas class="wave" id="waveB" width="320" height="110"></canvas>
         <div class="deck-grid">
           <div class="row"><span class="label">Sinal (RSSI)</span><span class="value" id="rssiB">--<span class="rssi-bars" id="barsB"></span></span></div>
           <div class="row"><span class="label">Bateria TX</span><span class="value" id="battB">--<span class="battery-bar"><span class="battery-fill" id="battFillB" style="width:0%"></span></span></span></div>
@@ -385,7 +388,12 @@
           <input id="dacVolB" type="range" min="0" max="100" value="100" style="flex:1;max-width:260px;accent-color:#58a6ff;cursor:pointer;">
           <span class="channel-badge" id="dacVolBValue">100%</span>
         </div>
-        <div class="info-msg">Os valores são salvos no RX e persistem após reiniciar. Use o teste de áudio para conferir o nível dos DACs.</div>
+        <div class="toolbar" style="margin-bottom:0;margin-top:8px;">
+          <span class="label" style="width:120px;">Fade de início:</span>
+          <input id="fadeInput" type="range" min="0" max="1000" step="50" value="200" style="flex:1;max-width:260px;accent-color:#58a6ff;cursor:pointer;">
+          <span class="channel-badge" id="fadeValue">200ms</span>
+        </div>
+        <div class="info-msg">Os valores são salvos no RX e persistem após reiniciar. Use o teste de áudio para conferir o nível dos DACs. O fade de início (0 a 1000ms) suaviza o timecode ao começar a girar o toca-discos, evitando o "pio" inicial.</div>
       </div>
 
       <div class="card">
@@ -672,6 +680,29 @@ function setToneStatus(idx, on) {
   el.className = 'label ' + (on ? 'good' : '');
 }
 
+function drawWave(idx, samples) {
+  const cv = $(idx === 0 ? 'waveA' : 'waveB');
+  if (!cv) return;
+  const ctx = cv.getContext('2d');
+  const W = cv.width, H = cv.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.strokeStyle = '#21262d';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, H / 2);
+  ctx.lineTo(W, H / 2);
+  ctx.stroke();
+  ctx.strokeStyle = idx === 0 ? '#58a6ff' : '#3fb950';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (let i = 0; i < samples.length; i++) {
+    const x = (i / (samples.length - 1)) * W;
+    const y = H / 2 - (samples[i] / 32768) * (H / 2 - 4);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
 // ------------------------- OUTROS PARSERS -------------------------
 function handleAudioStat(fields) {
   const decks = [
@@ -821,6 +852,28 @@ let scanActive = false;
 function handleLine(line) {
   line = line.trim();
   if (!line) return;
+  if (line.startsWith('WAVE,')) {
+    const p = line.split(',');
+    const deck = parseInt(p[1], 10);
+    if (deck === 1 || deck === 2) {
+      const samples = [];
+      for (let i = 2; i < p.length; i++) {
+        const v = parseInt(p[i], 10);
+        if (!isNaN(v)) samples.push(v);
+      }
+      if (samples.length >= 2) drawWave(deck - 1, samples);
+    }
+    return;
+  }
+  if (line.startsWith('FADE_OK,')) {
+    const fm = line.split(',')[1].trim().match(/^(\d+)/);
+    if (fm) {
+      $('fadeInput').value = Math.max(0, Math.min(1000, parseInt(fm[1], 10)));
+      $('fadeValue').textContent = fm[1] + 'ms';
+      logLine('Fade de início: ' + fm[1] + 'ms', 'good');
+    }
+    return;
+  }
   if (line.startsWith('SCAN_NET|')) {
     const p = line.split('|');
     if (p.length >= 4) {
@@ -1096,6 +1149,7 @@ async function connect() {
     sendSerialCmd('LED_BRIGHT');
     sendSerialCmd('VOLUME');
     sendSerialCmd('DECK_STATUS');
+    sendSerialCmd('FADE');
     readLoop();
   } catch (e) {
     logLine('Falha ao conectar: ' + e.message, 'bad');
@@ -1169,6 +1223,16 @@ function initDacVolSlider(id, deck) {
 }
 initDacVolSlider('A', 1);
 initDacVolSlider('B', 2);
+
+// Fade de início: slider (0-1000ms) enviam ao soltar
+$('fadeInput').addEventListener('input', () => {
+  $('fadeValue').textContent = $('fadeInput').value + 'ms';
+});
+$('fadeInput').addEventListener('change', () => {
+  const ms = parseInt($('fadeInput').value, 10);
+  sendSerialCmd('FADE ' + ms);
+  logLine('Fade de início: ' + ms + 'ms');
+});
 </script>
 </body>
 </html>
