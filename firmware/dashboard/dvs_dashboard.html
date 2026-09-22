@@ -144,6 +144,26 @@
   /* WiFi */
   .channel-info { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
   .channel-badge { background: #1f6feb; color: #fff; padding: 4px 12px; border-radius: 20px; font-size: 14px; font-weight: 600; }
+  .scan-summary { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+  .scan-ch { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid #30363d; border-radius: 8px; background: #0d1117; }
+  .scan-ch.recommended { border-color: #1a7f37; box-shadow: 0 0 0 1px #1a7f37 inset; }
+  .scan-ch .ch-num { width: 34px; text-align: center; font-weight: 700; font-size: 15px; color: #e6edf3; }
+  .scan-ch .ch-count { font-size: 13px; color: #8b949e; }
+  .scan-ch .ch-box { flex: 1; height: 8px; background: #21262d; border-radius: 4px; overflow: hidden; }
+  .scan-ch .ch-box > i { display: block; height: 100%; border-radius: 4px; transition: width 0.3s; }
+  .scan-ch .ch-med { width: 70px; text-align: right; font-size: 13px; font-variant-numeric: tabular-nums; }
+  .scan-tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .scan-tbl th, .scan-tbl td { padding: 6px 10px; text-align: left; border-bottom: 1px solid #21262d; }
+  .scan-tbl th { color: #8b949e; font-weight: 600; }
+  .scan-tbl .sig { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .sig-free { color: #3fb950; }
+  .sig-ok { color: #d29922; }
+  .sig-busy { color: #db6d28; }
+  .sig-crit { color: #f85149; }
+  .lvl-pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+  .lvl-livre { background: #1a7f3740; color: #3fb950; }
+  .lvl-ocupado { background: #d2992240; color: #d29922; }
+  .lvl-critico { background: #f8514940; color: #f85149; }
 </style>
 </head>
 <body>
@@ -326,6 +346,20 @@
             <input type="checkbox" id="chAutoScroll" checked style="accent-color:#58a6ff;width:14px;height:14px;cursor:pointer;">
             Autoscroll da telemetria
           </label>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Resultado do Scan</h2>
+        <div id="scanEmpty" class="info-msg">Pressione "Escanear redes" para mapear as redes 2.4 GHz do ambiente.</div>
+        <div id="scanSummary" class="scan-summary" style="display:none;"></div>
+        <div id="scanNetWrap" style="display:none;">
+          <div class="info-msg" style="margin-bottom:6px;"><span id="scanTotal"></span> — ordenadas do canal mais congestionado ao mais livre;</div>
+          <table class="scan-tbl">
+            <thead>
+              <tr><th>Canal</th><th>SSID</th><th>Sinal</th><th>Nível</th><th>Segurança</th></tr>
+            </thead>
+            <tbody id="scanNetTb"></tbody>
+          </table>
         </div>
       </div>
     </div>
@@ -677,6 +711,78 @@ const cfgState = [
   { deckId: null, slow: null, fast: null, thr: null }
 ];
 
+let scanNets = [];
+let scanChosen = null;
+const AUTH_NAMES = {
+  0: 'Aberto', 1: 'WEP', 3: 'WPA-PSK', 4: 'WPA2-PSK',
+  5: 'WPA/WPA2', 7: 'WPA2-Ent', 8: 'WPA3-PSK', 9: 'WPA2/WPA3'
+};
+function sigClass(rssi) {
+  return rssi > -60 ? 'sig-free' : rssi > -70 ? 'sig-ok' : rssi > -80 ? 'sig-busy' : 'sig-crit';
+}
+function levelOf(rssi) {
+  return rssi > -60 ? 'Livre' : rssi > -70 ? 'Média' : rssi > -80 ? 'Ocupado' : 'Crítico';
+}
+function lvlPill(level) {
+  const cls = level === 'Livre' ? 'lvl-livre' : level === 'Média' ? 'lvl-ocupado' : 'lvl-critico';
+  return '<span class="lvl-pill ' + cls + '">' + level + '</span>';
+}
+function resetScanView() {
+  scanNets = [];
+  scanChosen = null;
+  $('scanNetTb').innerHTML = '';
+  $('scanSummary').innerHTML = '';
+  $('scanSummary').style.display = 'none';
+  $('scanNetWrap').style.display = 'none';
+  $('scanEmpty').style.display = '';
+}
+function renderScan() {
+  const byCh = {};
+  for (const n of scanNets) {
+    if (!byCh[n.ch]) byCh[n.ch] = { ch: n.ch, count: 0, sum: 0, nets: [] };
+    const c = byCh[n.ch];
+    c.count++;
+    c.sum += n.rssi;
+    c.nets.push(n);
+  }
+  const channels = Object.values(byCh).map(c => ({ ch: c.ch, count: c.count, avgRssi: Math.round(c.sum / c.count), nets: c.nets }));
+  const all = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13].map(chNum => {
+    const c = channels.find(x => x.ch === chNum);
+    return c || { ch: chNum, count: 0, avgRssi: -100, nets: [] };
+  });
+  const sorted = all.sort((a, b) => b.count - a.count || b.avgRssi - a.avgRssi);
+  const sumEl = $('scanSummary');
+  const tb = $('scanNetTb');
+  sumEl.innerHTML = '';
+  tb.innerHTML = '';
+  for (const c of sorted) {
+    const level = c.count === 0 ? 'Livre' : c.avgRssi > -60 ? 'Ocupado' : c.avgRssi > -70 ? 'Média' : 'Crítico';
+    const barCol = c.count === 0 ? '#1a7f37' : c.avgRssi > -60 ? '#d29922' : c.avgRssi > -70 ? '#db6d28' : '#f85149';
+    let pct = Math.max(4, Math.min(100, 30 + (c.count / 3) * 25));
+    if (c.count === 0) pct = 4;
+    sumEl.innerHTML += '<div class="scan-ch' + (c.ch === scanChosen ? ' recommended' : '') + '">' +
+      '<span class="ch-num">' + c.ch + '</span>' +
+      '<span class="ch-count">' + c.count + ' rede' + (c.count === 1 ? '' : 's') + '</span>' +
+      '<span class="ch-box"><i style="width:' + pct + '%;background:' + barCol + ';"></i></span>' +
+      '<span class="ch-med">' + (c.count === 0 ? '--' : c.avgRssi + ' dBm') + '</span>' +
+      '<span class="ch-med" style="width:auto;">' + lvlPill(level) + '</span>' +
+      (c.ch === scanChosen ? '<span class="lvl-pill lvl-livre">Escolhido</span>' : '') +
+      '</div>';
+    const nets = c.nets.slice().sort((a, b) => b.rssi - a.rssi);
+    for (const n of nets) {
+      const authName = AUTH_NAMES[n.auth] !== undefined ? AUTH_NAMES[n.auth] : ('#' + n.auth);
+      tb.innerHTML += '<tr><td>' + n.ch + '</td><td>' + n.ssid + '</td>' +
+        '<td class="sig ' + sigClass(n.rssi) + '">' + n.rssi + ' dBm</td>' +
+        '<td>' + lvlPill(levelOf(n.rssi)) + '</td>' +
+        '<td>' + authName + '</td></tr>';
+    }
+  }
+  $('scanTotal').textContent = 'Total: ' + scanNets.length + ' redes';
+  $('scanEmpty').style.display = 'none';
+  $('scanSummary').style.display = '';
+  $('scanNetWrap').style.display = '';
+}
+
 function renderCfg(idx) {
   const s = cfgState[idx];
   const idEl = $('cfgId' + (idx === 0 ? 'A' : 'B'));
@@ -711,9 +817,27 @@ function handleLoss(fields) {
   }
 }
 
+let scanActive = false;
 function handleLine(line) {
   line = line.trim();
   if (!line) return;
+  if (line.startsWith('SCAN_NET|')) {
+    const p = line.split('|');
+    if (p.length >= 4) {
+      const ch = parseInt(p[1], 10);
+      const rssi = parseInt(p[2], 10);
+      const auth = parseInt(p[3], 10);
+      const ssid = p.slice(4).join('|').trim() || '(oculta)';
+      scanNets.push({ ch, rssi, auth, ssid });
+      renderScan();
+    }
+    return;
+  }
+  if (line.startsWith('SCAN_DONE')) {
+    logLine('Scan concluído: ' + scanNets.length + ' rede(s).', 'good');
+    renderScan();
+    return;
+  }
   if (line.startsWith('RF_CHANNEL,')) {
     const raw = line.split(',')[1].trim();
     const chm = raw.match(/^(\d+)/);
@@ -724,6 +848,11 @@ function handleLine(line) {
       $('currentChannel').textContent = ch;
       $('currentChannel').className = 'channel-badge';
       logLine('Canal atual: ' + ch, 'good');
+      if (scanActive) {
+        scanChosen = parseInt(ch, 10);
+        scanActive = false;
+        renderScan();
+      }
     } else {
       logLine('RF_CHANNEL: ' + line, 'warn');
     }
@@ -1015,7 +1144,7 @@ $('btnChannel').addEventListener('click', () => {
   if (!(ch >= 1 && ch <= 13)) { logLine('Canal inválido — use 1 a 13.', 'bad'); return; }
   sendSerialCmd('CHANNEL ' + ch);
 });
-$('btnChannelScan').addEventListener('click', () => { logLine('Escaneando melhor canal...'); sendSerialCmd('SCAN'); });
+$('btnChannelScan').addEventListener('click', () => { resetScanView(); scanActive = true; logLine('Escaneando melhor canal...'); sendCmd('SCAN'); });
 
 // Brilho dos LEDs: slider com debounce (envia ao soltar/parar de arrastar)
 $('ledBrightInput').addEventListener('input', () => {

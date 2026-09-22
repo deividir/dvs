@@ -387,7 +387,16 @@ void selectCleanChannel(bool force = false) {
     // AP forte perto pesa muito mais que AP distante.
     float w = (rssi > -60) ? 4.0f : (rssi > -70) ? 2.0f : (rssi > -80) ? 1.0f : 0.3f;
     score[ch] += w;
+    if (force) {
+      String ssid = WiFi.SSID(i);
+      ssid.replace('|', '_');
+      ssid.replace('\n', ' ');
+      ssid.replace('\r', ' ');
+      int auth = WiFi.encryptionType(i);
+      Serial.printf("SCAN_NET|%d|%d|%d|%s\n", ch, rssi, auth, ssid.c_str());
+    }
   }
+  if (force) Serial.printf("SCAN_DONE,%d\n", found);
   static const uint8_t prefOrder[13] = {12, 13, 1, 6, 11, 2, 7, 3, 8, 4, 9, 5, 10};
   uint8_t best = ESPNOW_CHANNEL;
   float bestScore = 1e9f;
