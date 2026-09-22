@@ -565,6 +565,14 @@ void handleSerialCommand() {
           sendParamCommand((uint8_t)fromSlot, CFG_DECK_ID, (int16_t)toId);
           Serial.printf("DECK_ID_SENT slot=%d newId=%d\n", fromSlot, toId);
         }
+      } else if (cmdLine.startsWith("DECK_STATUS")) {
+        for (uint8_t d = 1; d <= 2; d++) {
+          uint32_t last = 0;
+          portENTER_CRITICAL(&stateMux);
+          last = deckStates[d - 1].lastSeenMillis;
+          portEXIT_CRITICAL(&stateMux);
+          Serial.printf("DECK_STATUS slot=%u online=%u deckId=%u\n", d, (last != 0) ? 1 : 0, d);
+        }
       } else if (cmdLine.startsWith("FILTER")) {
         int deck = 0; float slow = 0, fast = 0, thr = 0;
         int n = sscanf(cmdLine.c_str(), "FILTER %d %f %f %f", &deck, &slow, &fast, &thr);

@@ -781,6 +781,20 @@ function handleLine(line) {
     logLine('RX: ' + line, 'bad');
     return;
   }
+  if (line.startsWith('DECK_STATUS')) {
+    const dm = line.match(/DECK_STATUS slot=(\d) online=(\d) deckId=(\d)/);
+    if (dm) {
+      const slot = parseInt(dm[1], 10);
+      const online = parseInt(dm[2], 10) === 1;
+      const newId = parseInt(dm[3], 10);
+      if (slot >= 1 && slot <= 2) {
+        const st = cfgState[slot - 1];
+        if (st) { st.deckId = online ? newId : null; renderCfg(slot - 1); }
+      }
+    }
+    logLine('RX: ' + line, 'good');
+    return;
+  }
   if (line.startsWith('DECK_ID_SENT')) {
     const dm = line.match(/DECK_ID_SENT slot=(\d) newId=(\d)/);
     if (dm) {
@@ -952,6 +966,7 @@ async function connect() {
     sendSerialCmd('CHANNEL');
     sendSerialCmd('LED_BRIGHT');
     sendSerialCmd('VOLUME');
+    sendSerialCmd('DECK_STATUS');
     readLoop();
   } catch (e) {
     logLine('Falha ao conectar: ' + e.message, 'bad');
