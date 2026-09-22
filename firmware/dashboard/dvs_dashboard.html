@@ -816,7 +816,8 @@ function renderScan() {
 
 function renderCfg(idx) {
   const s = cfgState[idx];
-  const idEl = $('cfgId' + (idx === 0 ? 'A' : 'B'));
+  const suffix = idx === 0 ? 'A' : 'B';
+  const idEl = $('cfgId' + suffix);
   idEl.textContent = s.deckId ? (s.deckId === 1 ? 'Deck A' : 'Deck B') : '--';
   const row = idx + 1;
   const a = $('slot' + row + 'A');
@@ -824,6 +825,12 @@ function renderCfg(idx) {
   if (a && b) {
     a.checked = (s.deckId === 1);
     b.checked = (s.deckId === 2);
+  }
+  if (s.slow != null && s.fast != null && s.thr != null) {
+    const sEl = $('cfgSlow' + suffix), fEl = $('cfgFast' + suffix), tEl = $('cfgThr' + suffix);
+    if (sEl) sEl.value = s.slow.toFixed(2);
+    if (fEl) fEl.value = s.fast.toFixed(2);
+    if (tEl) tEl.value = s.thr.toFixed(2);
   }
 }
 
@@ -1150,6 +1157,8 @@ async function connect() {
     sendSerialCmd('VOLUME');
     sendSerialCmd('DECK_STATUS');
     sendSerialCmd('FADE');
+    sendSerialCmd('FILTER? 1');
+    sendSerialCmd('FILTER? 2');
     readLoop();
   } catch (e) {
     logLine('Falha ao conectar: ' + e.message, 'bad');

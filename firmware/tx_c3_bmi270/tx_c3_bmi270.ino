@@ -43,6 +43,7 @@ uint8_t deckId = DEFAULT_DECK_ID;
 #define MSG_CALIB_ACK 6
 #define MSG_SET_PARAM 7
 #define MSG_CFG_ACK 8
+#define MSG_CFG_GET 9
 
 // Configuraveis remotamente pelo RX (campo batteryPct do pacote = id do parametro).
 #define CFG_DECK_ID 1
@@ -159,25 +160,32 @@ void saveDeckIdNvs() {
 
 void loadFilterNvs() {
   Preferences prefs;
-  if (prefs.begin("dvs", true)) {
-    float s = prefs.getFloat("alphaSlow", -1.0f);
-    float f = prefs.getFloat("alphaFast", -1.0f);
-    float t = prefs.getFloat("alphaThr", -1.0f);
-    if (s > 0.05f && s < 0.99f) ALPHA_SLOW = s;
-    if (f > 0.05f && f < 0.99f) ALPHA_FAST = f;
-    if (t > 0.01f && t < 10.0f) FAST_THRESHOLD_RPM = t;
-    prefs.end();
+  if (!prefs.begin("dvs", true)) {
+    Serial.println("FILTER_LOAD_ERR begin");
+    return;
   }
+  float s = prefs.getFloat("alphaSlow", -1.0f);
+  float f = prefs.getFloat("alphaFast", -1.0f);
+  float t = prefs.getFloat("alphaThr", -1.0f);
+  prefs.end();
+  if (s > 0.05f && s < 0.99f) ALPHA_SLOW = s;
+  if (f > 0.05f && f < 0.99f) ALPHA_FAST = f;
+  if (t > 0.01f && t < 10.0f) FAST_THRESHOLD_RPM = t;
+  Serial.printf("FILTER_LOADED slow=%.3f fast=%.3f thr=%.3f\n", ALPHA_SLOW, ALPHA_FAST, FAST_THRESHOLD_RPM);
 }
 
 void saveFilterNvs() {
   Preferences prefs;
-  if (prefs.begin("dvs", false)) {
-    prefs.putFloat("alphaSlow", ALPHA_SLOW);
-    prefs.putFloat("alphaFast", ALPHA_FAST);
-    prefs.putFloat("alphaThr", FAST_THRESHOLD_RPM);
-    prefs.end();
+  if (!prefs.begin("dvs", false)) {
+    Serial.println("FILTER_SAVE_ERR begin");
+    return;
   }
+  bool ok = prefs.putFloat("alphaSlow", ALPHA_SLOW) > 0 &&
+            prefs.putFloat("alphaFast", ALPHA_FAST) > 0 &&
+            prefs.putFloat("alphaThr", FAST_THRESHOLD_RPM) > 0;
+  prefs.end();
+  if (ok) Serial.printf("FILTER_SAVED slow=%.3f fast=%.3f thr=%.3f\n", ALPHA_SLOW, ALPHA_FAST, FAST_THRESHOLD_RPM);
+  else Serial.println("FILTER_SAVE_ERR putFloat");
 }
 
 // Auto-calibracao: o transmissor espera uma janela de gyro
@@ -497,6 +505,24 @@ void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *dataPtr, int len
     ack.rpmCenti = incoming.rpmCenti;
     ack.timestampMicros = micros();
     esp_now_send(receiverMAC, (uint8_t *)&ack, sizeof(ack));
+  } else if (incoming.msgType == MSG_CFG_GET) {
+    // Leitura dos filtros: responde 3x CFG_ACK com os valores em memoria
+    // (que sao os carregados do NVS no boot, apos persistencia bem-sucedida).
+    dvs_packet ack = {};
+    ack.msgType = MSG_CFG_ACK;
+    ack.version = PROTOCOL_VERSION;
+    ack.deckId = deckId;
+    ack.timestampMicros = micros();
+    ack.batteryPct = CFG_ALPHA_SLOW;
+    ack.rpmCenti = (int16_t)lroundf(ALPHA_SLOW * 1000.0f);
+    esp_now_send(receiverMAC, (uint8_t *)&ack, sizeof(ack));
+    ack.batteryPct = CFG_ALPHA_FAST;
+    ack.rpmCenti = (int16_t)lroundf(ALPHA_FAST * 1000.0f);
+    esp_now_send(receiverMAC, (uint8_t *)&ack, sizeof(ack));
+    ack.batteryPct = CFG_FAST_THRESHOLD;
+    ack.rpmCenti = (int16_t)lroundf(FAST_THRESHOLD_RPM * 1000.0f);
+    esp_now_send(receiverMAC, (uint8_t *)&ack, sizeof(ack));
+    Serial.printf("CFG_GET_OK slow=%.3f fast=%.3f thr=%.3f\n", ALPHA_SLOW, ALPHA_FAST, FAST_THRESHOLD_RPM);
   }
 }
 

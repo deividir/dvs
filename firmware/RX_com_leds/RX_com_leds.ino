@@ -47,6 +47,7 @@
 #define MSG_CALIB_ACK 6
 #define MSG_SET_PARAM 7
 #define MSG_CFG_ACK 8
+#define MSG_CFG_GET 9
 #define CFG_DECK_ID 1
 #define CFG_ALPHA_SLOW 2
 #define CFG_ALPHA_FAST 3
@@ -368,6 +369,38 @@ void saveDeckVolumeNvs(int deckIndex, float v) {
   prefs.end();
 }
 
+// Cache dos filtros aplicados aos decks (por slot), persistido em NVS.
+// Fonte de segurança: se o TX perder os valores (NVS do C3), o RX reaplica
+// automaticamente quando o deck reconectar (ver serviceEspNowControl).
+typedef struct { float slow; float fast; float thr; bool valid; } filter_cache_t;
+static filter_cache_t gFilterCache[2];
+
+void loadFilterCacheNvs() {
+  Preferences prefs;
+  prefs.begin("dvs", true);
+  for (int i = 0; i < 2; i++) {
+    const char *k = i == 0 ? "filA" : "filB";
+    float s = prefs.getFloat(String(k) + "_slow", -1.0f);
+    float f = prefs.getFloat(String(k) + "_fast", -1.0f);
+    float t = prefs.getFloat(String(k) + "_thr", -1.0f);
+    if (s > 0.05f && s < 0.99f && f > 0.05f && f < 0.99f && t > 0.01f && t < 10.0f) {
+      gFilterCache[i].slow = s; gFilterCache[i].fast = f; gFilterCache[i].thr = t; gFilterCache[i].valid = true;
+    }
+  }
+  prefs.end();
+}
+
+void saveFilterCacheNvs(int i) {
+  if (i < 0 || i > 1) return;
+  Preferences prefs;
+  prefs.begin("dvs", false);
+  const char *k = i == 0 ? "filA" : "filB";
+  prefs.putFloat(String(k) + "_slow", gFilterCache[i].slow);
+  prefs.putFloat(String(k) + "_fast", gFilterCache[i].fast);
+  prefs.putFloat(String(k) + "_thr", gFilterCache[i].thr);
+  prefs.end();
+}
+
 // Aplica o canal no radio e re-posiciona os peers conhecidos (usado pelo CHANNEL/SCAN).
 void applyChannelToRadio() {
   esp_wifi_set_channel(activeEspNowChannel, WIFI_SECOND_CHAN_NONE);
@@ -546,7 +579,16 @@ void audioTask(void *param) { audio_deck_state *deck = (audio_deck_state *)param
   } }
 
 void serviceEspNowControl() {
-  for (uint8_t i = 0; i < 2; i++) { uint8_t welcomeMacCopy[6]; uint8_t welcomeDeckCopy = 0; bool shouldSendWelcome = false; portENTER_CRITICAL(&stateMux); if (hasPendingWelcome[i]) { memcpy(welcomeMacCopy, pendingWelcomeMac[i], 6); welcomeDeckCopy = pendingWelcomeDeck[i]; hasPendingWelcome[i] = false; shouldSendWelcome = true; } portEXIT_CRITICAL(&stateMux); if (shouldSendWelcome) sendControlMessage(welcomeMacCopy, welcomeDeckCopy, MSG_WELCOME); }
+  for (uint8_t i = 0; i < 2; i++) { uint8_t welcomeMacCopy[6]; uint8_t welcomeDeckCopy = 0; bool shouldSendWelcome = false; portENTER_CRITICAL(&stateMux); if (hasPendingWelcome[i]) { memcpy(welcomeMacCopy, pendingWelcomeMac[i], 6); welcomeDeckCopy = pendingWelcomeDeck[i]; hasPendingWelcome[i] = false; shouldSendWelcome = true; } portEXIT_CRITICAL(&stateMux); if (shouldSendWelcome) { sendControlMessage(welcomeMacCopy, welcomeDeckCopy, MSG_WELCOME);
+    // Reaplica os filtros persistidos quando o deck reconecta: cobre o caso
+    // do TX perder os valores no NVS do C3 (fonte de segurança).
+    if (gFilterCache[i].valid) {
+      Serial.printf("FILTER_REAPPLY deck=%u slow=%.3f fast=%.3f thr=%.3f\n", welcomeDeckCopy, gFilterCache[i].slow, gFilterCache[i].fast, gFilterCache[i].thr);
+      sendParamCommand(welcomeDeckCopy, CFG_ALPHA_SLOW, (int16_t)lroundf(gFilterCache[i].slow * 1000.0f));
+      sendParamCommand(welcomeDeckCopy, CFG_ALPHA_FAST, (int16_t)lroundf(gFilterCache[i].fast * 1000.0f));
+      sendParamCommand(welcomeDeckCopy, CFG_FAST_THRESHOLD, (int16_t)lroundf(gFilterCache[i].thr * 1000.0f));
+    }
+  } }
   uint32_t nowMillis = millis(); for (uint8_t i = 0; i < 2; i++) { uint8_t macCopy[6]; bool shouldPing = false; portENTER_CRITICAL(&stateMux); deck_state *state = &deckStates[i]; if (state->lastSeenMillis != 0 && nowMillis - state->lastSeenMillis <= DECK_TIMEOUT_MS && nowMillis - state->lastPingMillis >= PING_INTERVAL_MS) { memcpy(macCopy, state->mac, 6); state->lastPingMillis = nowMillis; shouldPing = true; } portEXIT_CRITICAL(&stateMux); if (shouldPing) sendControlMessage(macCopy, i + 1, MSG_PING); }
 }
 
@@ -630,6 +672,31 @@ void handleSerialCommand() {
           portEXIT_CRITICAL(&stateMux);
           Serial.printf("DECK_STATUS slot=%u online=%u deckId=%u\n", d, (last != 0) ? 1 : 0, d);
         }
+      } else if (cmdLine.startsWith("FILTER?")) {
+        // Leitura dos filtros vigentes nos TX: encaminha MSG_CFG_GET ao(s) deck(s).
+        // CFG_ACK retorna (3 por deck) e ja e impresso no serial para o dashboard.
+        int deck = 0;
+        bool perDeck = false;
+        String arg = cmdLine.substring(7);
+        arg.trim();
+        if (arg.length() == 1 && (arg[0] == '1' || arg[0] == '2')) {
+          perDeck = true; deck = arg[0] - '0';
+        }
+        uint8_t sent = 0;
+        uint8_t startDeck = perDeck ? (uint8_t)deck : 1;
+        uint8_t endDeck = perDeck ? (uint8_t)deck : 2;
+        for (uint8_t d = startDeck; d <= endDeck; d++) {
+          uint8_t macCopy[6];
+          portENTER_CRITICAL(&stateMux);
+          uint32_t last = deckStates[d - 1].lastSeenMillis;
+          memcpy(macCopy, deckStates[d - 1].mac, 6);
+          portEXIT_CRITICAL(&stateMux);
+          if (last == 0) continue;
+          sendControlMessage(macCopy, d, MSG_CFG_GET);
+          sent++;
+        }
+        if (sent == 0) Serial.println("CFG_ERR: nenhum deck com sinal");
+        else Serial.printf("FILTER_GET_SENT decks=%u\n", sent);
       } else if (cmdLine.startsWith("FILTER")) {
         int deck = 0; float slow = 0, fast = 0, thr = 0;
         int n = sscanf(cmdLine.c_str(), "FILTER %d %f %f %f", &deck, &slow, &fast, &thr);
@@ -654,6 +721,11 @@ void handleSerialCommand() {
             sendParamCommand(d, CFG_ALPHA_SLOW, (int16_t)lroundf(slow * 1000.0f));
             sendParamCommand(d, CFG_ALPHA_FAST, (int16_t)lroundf(fast * 1000.0f));
             sendParamCommand(d, CFG_FAST_THRESHOLD, (int16_t)lroundf(thr * 1000.0f));
+            gFilterCache[d - 1].slow = slow;
+            gFilterCache[d - 1].fast = fast;
+            gFilterCache[d - 1].thr = thr;
+            gFilterCache[d - 1].valid = true;
+            saveFilterCacheNvs(d - 1);
             sent++;
           }
           if (sent == 0) Serial.println("CFG_ERR: nenhum deck com sinal");
@@ -819,6 +891,7 @@ void setup() {
   audioDecks[0].volume = loadDeckVolumeNvs(0);
   audioDecks[1].volume = loadDeckVolumeNvs(1);
   gStartFadeMs = loadStartFadeNvs();
+  loadFilterCacheNvs();
   ledPwmOk[0] = ledcAttach(LED_DECK_A, 5000, 8);
   ledPwmOk[1] = ledcAttach(LED_DECK_B, 5000, 8);
   if (!ledPwmOk[0]) pinMode(LED_DECK_A, OUTPUT);
