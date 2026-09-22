@@ -90,7 +90,7 @@
   @media (max-width: 700px) { .deck-home { grid-template-columns: 1fr; gap: 24px; } }
   .view { display: none; }
   .view.active { display: block; }
-  .inner { max-width: 1100px; }
+  .inner { max-width: 1400px; margin: 0 auto; }
 
   /* Log compartilhado */
   .log-wrap {
@@ -99,7 +99,9 @@
     border: 1px solid #30363d;
     border-radius: 10px;
     padding: 12px;
-    max-width: 1100px;
+    max-width: 1400px;
+    margin-left: auto;
+    margin-right: auto;
   }
   .log-head {
     display: flex;
@@ -253,26 +255,18 @@
         <h2>Configuração TX <span style="color:#8b949e;font-weight:400;font-size:13px;">(via ESP-NOW, sem abrir caixas)</span></h2>
         <div class="grid" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
           <div class="calib-block">
-            <h3>Trocar o deck da caixa</h3>
-            <div class="calib-line"><button class="btn small" onclick="sendCmd('DECK_ID 1')">Caixa do slot 1 → Deck B</button></div>
-            <div class="calib-line"><button class="btn small" onclick="sendCmd('DECK_ID 2')">Caixa do slot 2 → Deck A</button></div>
-            <div class="info-msg" style="margin-top:8px;font-size:11px;">Use o argumento extra para escolher: ex. <code>DECK_ID 1 1</code> mantém slot 1 como Deck A.</div>
+            <h3>Filtros Deck A</h3>
+            <div class="calib-line"><span class="label">alphaSlow</span><input id="cfgSlowA" type="number" step="0.01" value="0.50"></div>
+            <div class="calib-line"><span class="label">alphaFast</span><input id="cfgFastA" type="number" step="0.01" value="0.70"></div>
+            <div class="calib-line"><span class="label">threshold</span><input id="cfgThrA" type="number" step="0.05" value="0.15"></div>
+            <div class="calib-line"><button class="btn small" onclick="applyFilter(0)">Aplicar Deck A</button></div>
           </div>
-          <div>
-            <div class="calib-block" style="margin-bottom:12px;">
-              <h3>Filtros Deck A</h3>
-              <div class="calib-line"><span class="label">alphaSlow</span><input id="cfgSlowA" type="number" step="0.01" value="0.50"></div>
-              <div class="calib-line"><span class="label">alphaFast</span><input id="cfgFastA" type="number" step="0.01" value="0.70"></div>
-              <div class="calib-line"><span class="label">threshold</span><input id="cfgThrA" type="number" step="0.05" value="0.15"></div>
-              <div class="calib-line"><button class="btn small" onclick="applyFilter(0)">Aplicar Deck A</button></div>
-            </div>
-            <div class="calib-block">
-              <h3>Filtros Deck B</h3>
-              <div class="calib-line"><span class="label">alphaSlow</span><input id="cfgSlowB" type="number" step="0.01" value="0.50"></div>
-              <div class="calib-line"><span class="label">alphaFast</span><input id="cfgFastB" type="number" step="0.01" value="0.70"></div>
-              <div class="calib-line"><span class="label">threshold</span><input id="cfgThrB" type="number" step="0.05" value="0.15"></div>
-              <div class="calib-line"><button class="btn small" onclick="applyFilter(1)">Aplicar Deck B</button></div>
-            </div>
+          <div class="calib-block">
+            <h3>Filtros Deck B</h3>
+            <div class="calib-line"><span class="label">alphaSlow</span><input id="cfgSlowB" type="number" step="0.01" value="0.50"></div>
+            <div class="calib-line"><span class="label">alphaFast</span><input id="cfgFastB" type="number" step="0.01" value="0.70"></div>
+            <div class="calib-line"><span class="label">threshold</span><input id="cfgThrB" type="number" step="0.05" value="0.15"></div>
+            <div class="calib-line"><button class="btn small" onclick="applyFilter(1)">Aplicar Deck B</button></div>
           </div>
         </div>
       </div>
@@ -337,6 +331,46 @@
     </div>
   </section>
 
+  <!-- ==================== GERAL ==================== -->
+  <section id="view-geral" class="view">
+    <div class="inner">
+      <div class="card">
+        <h2>Configurações Gerais</h2>
+        <div class="toolbar" style="margin-bottom:16px;">
+          <span class="label" style="width:120px;">Brilho dos LEDs:</span>
+          <input id="ledBrightInput" type="range" min="0" max="100" value="100" style="flex:1;max-width:260px;accent-color:#58a6ff;cursor:pointer;">
+          <span class="channel-badge" id="ledBrightValue">100%</span>
+        </div>
+        <div class="toolbar" style="margin-bottom:8px;">
+          <span class="label" style="width:120px;">Volume DAC A:</span>
+          <input id="dacVolA" type="range" min="0" max="100" value="100" style="flex:1;max-width:260px;accent-color:#58a6ff;cursor:pointer;">
+          <span class="channel-badge" id="dacVolAValue">100%</span>
+        </div>
+        <div class="toolbar" style="margin-bottom:0;">
+          <span class="label" style="width:120px;">Volume DAC B:</span>
+          <input id="dacVolB" type="range" min="0" max="100" value="100" style="flex:1;max-width:260px;accent-color:#58a6ff;cursor:pointer;">
+          <span class="channel-badge" id="dacVolBValue">100%</span>
+        </div>
+        <div class="info-msg">Os valores são salvos no RX e persistem após reiniciar. Use o teste de áudio para conferir o nível dos DACs.</div>
+      </div>
+
+      <div class="card">
+        <h2>Configuração TX <span style="color:#8b949e;font-weight:400;font-size:13px;">(via ESP-NOW, sem abrir caixas)</span></h2>
+        <div class="toolbar" style="margin-bottom:8px;">
+          <span class="label" style="width:120px;">Caixa do slot 1:</span>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:#e6edf3;"><input id="slot1A" type="checkbox" onchange="changeSlotDeck(1, 1)" style="accent-color:#58a6ff;width:15px;height:15px;cursor:pointer;">Deck A</label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:#e6edf3;"><input id="slot1B" type="checkbox" onchange="changeSlotDeck(1, 2)" style="accent-color:#58a6ff;width:15px;height:15px;cursor:pointer;">Deck B</label>
+        </div>
+        <div class="toolbar" style="margin-bottom:8px;">
+          <span class="label" style="width:120px;">Caixa do slot 2:</span>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:#e6edf3;"><input id="slot2A" type="checkbox" onchange="changeSlotDeck(2, 1)" style="accent-color:#58a6ff;width:15px;height:15px;cursor:pointer;">Deck A</label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:#e6edf3;"><input id="slot2B" type="checkbox" onchange="changeSlotDeck(2, 2)" style="accent-color:#58a6ff;width:15px;height:15px;cursor:pointer;">Deck B</label>
+        </div>
+        <div class="info-msg">O estado dos checkboxes reflete o deck atual de cada caixa (confirmado pelo TX via ESP-NOW).</div>
+      </div>
+    </div>
+  </section>
+
   <!-- Log compartilhado -->
   <div class="log-wrap">
     <div class="log-head">
@@ -356,13 +390,15 @@ let lastUpdate = 0;
 
 const $ = (id) => document.getElementById(id);
 
-const pageNames = { dashboard: 'RECEIVER MONITOR', calib: 'CALIBRAÇÃO', audio: 'TESTES DE ÁUDIO', wifi: 'WIFI' };
+const pageNames = { dashboard: 'RECEIVER MONITOR', calib: 'CALIBRAÇÃO', audio: 'TESTES DE ÁUDIO', wifi: 'WIFI', geral: 'GERAL' };
 
 function showSection(page) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   const el = $('view-' + page);
   if (el) el.classList.add('active');
   $('pageTitle').textContent = pageNames[page] || 'RECEIVER MONITOR';
+  const logWrap = document.querySelector('.log-wrap');
+  if (logWrap) logWrap.style.display = (page === 'geral' || page === 'audio') ? 'none' : '';
 }
 window.onSectionChange = showSection;
 
@@ -645,6 +681,21 @@ function renderCfg(idx) {
   const s = cfgState[idx];
   const idEl = $('cfgId' + (idx === 0 ? 'A' : 'B'));
   idEl.textContent = s.deckId ? (s.deckId === 1 ? 'Deck A' : 'Deck B') : '--';
+  const row = idx + 1;
+  const a = $('slot' + row + 'A');
+  const b = $('slot' + row + 'B');
+  if (a && b) {
+    a.checked = (s.deckId === 1);
+    b.checked = (s.deckId === 2);
+  }
+}
+
+function changeSlotDeck(slot, deck) {
+  const idx = slot - 1;
+  const st = cfgState[idx];
+  if (st) { st.deckId = deck; renderCfg(idx); }
+  sendCmd('DECK_ID ' + slot + ' ' + deck);
+  logLine('Solicitando: caixa do slot ' + slot + ' -> ' + (deck === 1 ? 'Deck A' : 'Deck B') + '...');
 }
 
 function handleLoss(fields) {
@@ -682,6 +733,28 @@ function handleLine(line) {
     logLine('RX: ' + line, 'bad');
     return;
   }
+  if (line.startsWith('LED_BRIGHT_OK,')) {
+    const bm = line.split(',')[1].trim().match(/^(\d+)/);
+    if (bm) {
+      const b = parseInt(bm[1], 10);
+      const input = $('ledBrightInput');
+      if (input) {
+        input.value = b;
+        $('ledBrightValue').textContent = b + '%';
+      }
+    }
+    return;
+  }
+  if (line.startsWith('VOLUME_OK,')) {
+    const parts = line.split(',');
+    if (parts.length >= 3) {
+      const va = Math.round(parseFloat(parts[1]) * 100);
+      const vb = Math.round(parseFloat(parts[2]) * 100);
+      if (!isNaN(va)) { $('dacVolA').value = va; $('dacVolAValue').textContent = va + '%'; }
+      if (!isNaN(vb)) { $('dacVolB').value = vb; $('dacVolBValue').textContent = vb + '%'; }
+    }
+    return;
+  }
   if (line.startsWith('AUDIO_STAT,')) {
     handleAudioStat(line.split(','));
     return;
@@ -708,7 +781,20 @@ function handleLine(line) {
     logLine('RX: ' + line, 'bad');
     return;
   }
-  if (line.startsWith('DECK_ID_SENT') || line.startsWith('FILTER_SENT')) {
+  if (line.startsWith('DECK_ID_SENT')) {
+    const dm = line.match(/DECK_ID_SENT slot=(\d) newId=(\d)/);
+    if (dm) {
+      const slot = parseInt(dm[1], 10);
+      const newId = parseInt(dm[2], 10);
+      if (slot >= 1 && slot <= 2) {
+        const st = cfgState[slot - 1];
+        if (st) { st.deckId = newId; renderCfg(slot - 1); }
+      }
+    }
+    logLine('RX: ' + line, 'good');
+    return;
+  }
+  if (line.startsWith('FILTER_SENT')) {
     logLine('RX: ' + line, 'good');
     return;
   }
@@ -864,6 +950,8 @@ async function connect() {
     $('linkBadge').className = 'badge on';
     logLine('Porta serial aberta (115200 baud).');
     sendSerialCmd('CHANNEL');
+    sendSerialCmd('LED_BRIGHT');
+    sendSerialCmd('VOLUME');
     readLoop();
   } catch (e) {
     logLine('Falha ao conectar: ' + e.message, 'bad');
@@ -913,6 +1001,30 @@ $('btnChannel').addEventListener('click', () => {
   sendSerialCmd('CHANNEL ' + ch);
 });
 $('btnChannelScan').addEventListener('click', () => { logLine('Escaneando melhor canal...'); sendSerialCmd('SCAN'); });
+
+// Brilho dos LEDs: slider com debounce (envia ao soltar/parar de arrastar)
+$('ledBrightInput').addEventListener('input', () => {
+  $('ledBrightValue').textContent = $('ledBrightInput').value + '%';
+});
+$('ledBrightInput').addEventListener('change', () => {
+  const b = parseInt($('ledBrightInput').value, 10);
+  sendSerialCmd('LED_BRIGHT ' + b);
+  logLine('Brilho dos LEDs: ' + b + '%');
+});
+
+// Volume dos DACs: slider com leitura % (0-100 -> 0.00-1.00)
+function initDacVolSlider(id, deck) {
+  $('dacVol' + id).addEventListener('input', () => {
+    $('dacVol' + id + 'Value').textContent = $('dacVol' + id).value + '%';
+  });
+  $('dacVol' + id).addEventListener('change', () => {
+    const pct = parseInt($('dacVol' + id).value, 10);
+    sendSerialCmd('VOLUME ' + deck + ' ' + (pct / 100).toFixed(2));
+    logLine('Volume DAC ' + deck + ': ' + pct + '%');
+  });
+}
+initDacVolSlider('A', 1);
+initDacVolSlider('B', 2);
 </script>
 </body>
 </html>

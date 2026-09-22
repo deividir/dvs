@@ -12,6 +12,7 @@
 #include <esp_now.h>
 #include <esp_wifi.h>
 #include <driver/i2s.h>
+#include <driver/ledc.h>
 #include <math.h>
 #include <Preferences.h>
 
@@ -146,6 +147,7 @@ typedef struct {
   uint32_t testToneUntil;
   uint16_t testToneFreqHz;
   uint32_t tonePhase;
+  float volume;
 } audio_deck_state;
 
 deck_state deckStates[2];
@@ -159,6 +161,11 @@ uint8_t cv02PackedBits[CV02_PACKED_BYTES];
 uint32_t lastDebugPrintMillis = 0;
 int16_t sinTable[SIN_COS_TABLE_SIZE];
 int16_t cosTable[SIN_COS_TABLE_SIZE];
+
+// Brilho dos LEDs de deck (0-100%, PWM via ledc). Default 100 = comportamento atual.
+uint8_t ledBrightness = 100;
+// true quando o pino foi configurado com sucesso via ledcAttach (PWM de brilho).
+bool ledPwmOk[2] = {false, false};
 
 // Batimento cardiaco dos tasks de audio (1 incremento por buffer escrito com sucesso).
 volatile uint32_t audioWriteCount[2] = {0, 0};
@@ -188,11 +195,11 @@ void buildSinCosTables() {
 
 audio_deck_state audioDecks[2] = {
 #if SOLO_DECK_A && SOLO_DECK_A_USA_PINOS_B
-  { 1, I2S_NUM_0, DAC_B_BCK_PIN, DAC_B_LRCK_PIN, DAC_B_DATA_PIN, "audioDeckA", 0.0f, 0.0f, CV02_START_PHASE, 0, 0, 0, false, 0, TEST_TONE_FREQ_HZ, 0 },
+  { 1, I2S_NUM_0, DAC_B_BCK_PIN, DAC_B_LRCK_PIN, DAC_B_DATA_PIN, "audioDeckA", 0.0f, 0.0f, CV02_START_PHASE, 0, 0, 0, false, 0, TEST_TONE_FREQ_HZ, 0, 1.0f },
 #else
-  { 1, I2S_NUM_0, DAC_A_BCK_PIN, DAC_A_LRCK_PIN, DAC_A_DATA_PIN, "audioDeckA", 0.0f, 0.0f, CV02_START_PHASE, 0, 0, 0, false, 0, TEST_TONE_FREQ_HZ, 0 },
+  { 1, I2S_NUM_0, DAC_A_BCK_PIN, DAC_A_LRCK_PIN, DAC_A_DATA_PIN, "audioDeckA", 0.0f, 0.0f, CV02_START_PHASE, 0, 0, 0, false, 0, TEST_TONE_FREQ_HZ, 0, 1.0f },
 #endif
-  { 2, I2S_NUM_1, DAC_B_BCK_PIN, DAC_B_LRCK_PIN, DAC_B_DATA_PIN, "audioDeckB", 0.0f, 0.0f, CV02_START_PHASE, 0, 0, 0, false, 0, TEST_TONE_FREQ_HZ, 0 }
+  { 2, I2S_NUM_1, DAC_B_BCK_PIN, DAC_B_LRCK_PIN, DAC_B_DATA_PIN, "audioDeckB", 0.0f, 0.0f, CV02_START_PHASE, 0, 0, 0, false, 0, TEST_TONE_FREQ_HZ, 0, 1.0f }
 };
 
 // [Funções de suporte: lfsrBit, lfsrForward, setPackedBit, getPackedBit, buildCv02Bits mantidas aqui]
@@ -294,6 +301,38 @@ void saveChannelNvs(uint8_t ch) {
   Preferences prefs;
   prefs.begin("dvs", false);
   prefs.putInt("chan", ch);
+  prefs.end();
+}
+
+// Brilho dos LEDs de deck persistido em NVS: sobrevive a reboots.
+int loadLedBrightnessNvs() {
+  Preferences prefs;
+  prefs.begin("dvs", true);
+  int saved = prefs.getInt("ledBrt", -1);
+  prefs.end();
+  if (saved >= 0 && saved <= 100) return saved;
+  return 100;
+}
+void saveLedBrightnessNvs(uint8_t b) {
+  Preferences prefs;
+  prefs.begin("dvs", false);
+  prefs.putInt("ledBrt", (int)b);
+  prefs.end();
+}
+
+// Volume por deck (0.0-1.0) persistido em NVS: sobrevive a reboots.
+float loadDeckVolumeNvs(int deckIndex) {
+  Preferences prefs;
+  prefs.begin("dvs", true);
+  float saved = prefs.getFloat(deckIndex == 0 ? "volA" : "volB", -1.0f);
+  prefs.end();
+  if (saved >= 0.0f && saved <= 1.0f) return saved;
+  return 1.0f;
+}
+void saveDeckVolumeNvs(int deckIndex, float v) {
+  Preferences prefs;
+  prefs.begin("dvs", false);
+  prefs.putFloat(deckIndex == 0 ? "volA" : "volB", v);
   prefs.end();
 }
 
@@ -410,6 +449,15 @@ void audioTask(void *param) { audio_deck_state *deck = (audio_deck_state *)param
       deck->filteredRpm += delta * alpha;
     }
     for (int i = 0; i < DMA_BUF_LEN; i++) { int16_t left, right; if (millis() < deck->testToneUntil) { deck->tonePhase += (uint32_t)((float)deck->testToneFreqHz * 65536.0f / SAMPLE_RATE); int16_t tone = (int16_t)((float)sinTable[(deck->tonePhase >> 6) & (SIN_COS_TABLE_SIZE - 1)] * TEST_TONE_AMPLITUDE); left = tone; right = tone; } else if (stopped) { left = 0; right = 0; } else { renderCv02Sample(deck, deck->filteredRpm, &left, &right); } buffer[i * 2] = left; buffer[i * 2 + 1] = right; }
+    // Volume do deck (0.0-1.0) aplicado no buffer final, cubrindo timecode e tom de teste.
+    if (deck->volume < 0.999f) {
+      for (int v = 0; v < DMA_BUF_LEN * 2; v++) {
+        int32_t scaled = (int32_t)((float)buffer[v] * deck->volume);
+        if (scaled > 32767) scaled = 32767;
+        if (scaled < -32768) scaled = -32768;
+        buffer[v] = (int16_t)scaled;
+      }
+    }
     size_t written;
     esp_err_t i2sErr = i2s_write(deck->port, buffer, sizeof(buffer), &written, portMAX_DELAY);
     {
@@ -546,6 +594,45 @@ void handleSerialCommand() {
           if (sent == 0) Serial.println("CFG_ERR: nenhum deck com sinal");
           else Serial.printf("FILTER_SENT decks=%u slow=%.3f fast=%.3f thr=%.3f\n", sent, slow, fast, thr);
         }
+      } else if (cmdLine.startsWith("LED_BRIGHT")) {
+        String arg = cmdLine.substring(10);
+        arg.trim();
+        if (arg.length() == 0) {
+          Serial.printf("LED_BRIGHT_OK,%d\n", (int)ledBrightness);
+        } else {
+          int b = arg.toInt();
+          if (b >= 0 && b <= 100) {
+            ledBrightness = (uint8_t)b;
+            saveLedBrightnessNvs(ledBrightness);
+            Serial.printf("LED_BRIGHT_OK,%d\n", (int)ledBrightness);
+          } else {
+            Serial.println("LED_ERR: use 0-100");
+          }
+        }
+      } else if (cmdLine.startsWith("VOLUME")) {
+        if (cmdLine.equals("VOLUME")) {
+          Serial.printf("VOLUME_OK,%.3f,%.3f\n", audioDecks[0].volume, audioDecks[1].volume);
+        } else {
+          int deck = 0; float vol = 0;
+          int n = sscanf(cmdLine.c_str(), "VOLUME %d %f", &deck, &vol);
+          bool valid = false;
+          if (n == 2 && (deck == 1 || deck == 2) && vol >= 0.0f && vol <= 1.0f) {
+            audioDecks[deck - 1].volume = vol;
+            saveDeckVolumeNvs(deck - 1, vol);
+            valid = true;
+          } else {
+            n = sscanf(cmdLine.c_str(), "VOLUME %f", &vol);
+            if (n == 1 && vol >= 0.0f && vol <= 1.0f) {
+              audioDecks[0].volume = vol;
+              audioDecks[1].volume = vol;
+              saveDeckVolumeNvs(0, vol);
+              saveDeckVolumeNvs(1, vol);
+              valid = true;
+            }
+          }
+if (valid) Serial.printf("VOLUME_OK,%.3f,%.3f\n", audioDecks[0].volume, audioDecks[1].volume);
+          else Serial.println("VOLUME_ERR: use VOLUME [<deck 1|2>] <0.00-1.00>");
+        }
       }
       cmdLine = "";
     } else if (c != '\r') {
@@ -554,7 +641,7 @@ void handleSerialCommand() {
   }
 }
 
-void updateDeckLed(uint8_t deckIndex, uint8_t pin) {
+void updateDeckLed(uint8_t deckIndex, uint8_t ledPin) {
   static uint32_t warnHoldUntil[2] = {0, 0};
   bool seen = false;
   uint32_t lastSeenMillis = 0;
@@ -580,14 +667,19 @@ void updateDeckLed(uint8_t deckIndex, uint8_t pin) {
       deckStates[deckIndex].lastGap = 0;
     }
     portEXIT_CRITICAL(&stateMux);
-    digitalWrite(pin, LOW);
+    if (ledPwmOk[deckIndex]) ledcWrite(ledPin, 0); else digitalWrite(ledPin, LOW);
     return;
   }
 
   bool warn = (rssi < RSSI_WARN_THRESHOLD_DBM) || (lost > LOST_PACKET_WARN_THRESHOLD);
   if (warn) warnHoldUntil[deckIndex] = now + WARN_HOLD_MS;
   bool blinking = (now < warnHoldUntil[deckIndex]);
-  digitalWrite(pin, blinking ? ((now / WARN_BLINK_MS) % 2) : HIGH);
+  uint32_t duty = (uint32_t)((uint32_t)ledBrightness * 255UL / 100UL);
+  if (ledPwmOk[deckIndex]) {
+    ledcWrite(ledPin, blinking ? (((now / WARN_BLINK_MS) % 2) ? duty : 0) : duty);
+  } else {
+    digitalWrite(ledPin, blinking ? ((now / WARN_BLINK_MS) % 2) : (duty > 0));
+  }
 }
 
 void sendTelemetry() {
@@ -642,11 +734,18 @@ void sendTelemetry() {
 }
 
 void setup() {
-  pinMode(LED_DECK_A, OUTPUT);
-  pinMode(LED_DECK_B, OUTPUT);
+  // LEDs de deck via PWM (ledc) para controle de brilho; LED de calibracao continua GPIO.
+  ledBrightness = (uint8_t)loadLedBrightnessNvs();
+  audioDecks[0].volume = loadDeckVolumeNvs(0);
+  audioDecks[1].volume = loadDeckVolumeNvs(1);
+  ledPwmOk[0] = ledcAttach(LED_DECK_A, 5000, 8);
+  ledPwmOk[1] = ledcAttach(LED_DECK_B, 5000, 8);
+  if (!ledPwmOk[0]) pinMode(LED_DECK_A, OUTPUT);
+  if (!ledPwmOk[1]) pinMode(LED_DECK_B, OUTPUT);
   pinMode(LED_CALIB, OUTPUT);
   Serial.begin(DEBUG_BAUD);
   Serial.println("DVS_RX_READY,v2");
+  Serial.printf("LED_PWM_A=%d LED_PWM_B=%d\n", ledPwmOk[0], ledPwmOk[1]);
   buildSinCosTables();
   buildCv02Bits();
   setupI2S(&audioDecks[0], false);
