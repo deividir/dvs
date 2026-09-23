@@ -75,8 +75,10 @@
 #define OUTPUT_GAIN 0.70f
 #define CALIB_THRESHOLD_RPM 1.0f
 #define STOP_DEBOUNCE_MS 100
+// Apos o deck ficar parado por STOP_RESET_MS, o timecode volta ao ciclo 0
+// (como "levantar a agulha"). Em modo relativo o Serato resincroniza sozinho.
+#define STOP_RESET_MS 5000
 #define SIN_COS_TABLE_SIZE 1024
-#define WRAP_GAP_MS 400
 
 // Fade de inicio (anti-"pio"): apos o toca-discos comecar a girar, o volume do
 // timecode sobe de 0 a 100% em START_FADE_MS. Configuravel via comando FADE
@@ -154,7 +156,6 @@ typedef struct {
   float filteredRpm;
   float calibOffset;
   uint64_t cv02Phase64;
-  uint32_t wrapGapEndMillis;
   uint32_t stopCandidateStart;
   uint32_t calibStableStart;
   bool calibrating;
@@ -212,11 +213,11 @@ void buildSinCosTables() {
 
 audio_deck_state audioDecks[2] = {
 #if SOLO_DECK_A && SOLO_DECK_A_USA_PINOS_B
-  { 1, I2S_NUM_0, DAC_B_BCK_PIN, DAC_B_LRCK_PIN, DAC_B_DATA_PIN, "audioDeckA", 0.0f, 0.0f, CV02_START_PHASE, 0, 0, 0, false, 0, TEST_TONE_FREQ_HZ, 0, 1.0f },
+  { 1, I2S_NUM_0, DAC_B_BCK_PIN, DAC_B_LRCK_PIN, DAC_B_DATA_PIN, "audioDeckA", 0.0f, 0.0f, CV02_START_PHASE, 0, 0, false, 0, TEST_TONE_FREQ_HZ, 0, 1.0f },
 #else
-  { 1, I2S_NUM_0, DAC_A_BCK_PIN, DAC_A_LRCK_PIN, DAC_A_DATA_PIN, "audioDeckA", 0.0f, 0.0f, CV02_START_PHASE, 0, 0, 0, false, 0, TEST_TONE_FREQ_HZ, 0, 1.0f },
+  { 1, I2S_NUM_0, DAC_A_BCK_PIN, DAC_A_LRCK_PIN, DAC_A_DATA_PIN, "audioDeckA", 0.0f, 0.0f, CV02_START_PHASE, 0, 0, false, 0, TEST_TONE_FREQ_HZ, 0, 1.0f },
 #endif
-  { 2, I2S_NUM_1, DAC_B_BCK_PIN, DAC_B_LRCK_PIN, DAC_B_DATA_PIN, "audioDeckB", 0.0f, 0.0f, CV02_START_PHASE, 0, 0, 0, false, 0, TEST_TONE_FREQ_HZ, 0, 1.0f }
+  { 2, I2S_NUM_1, DAC_B_BCK_PIN, DAC_B_LRCK_PIN, DAC_B_DATA_PIN, "audioDeckB", 0.0f, 0.0f, CV02_START_PHASE, 0, 0, false, 0, TEST_TONE_FREQ_HZ, 0, 1.0f }
 };
 
 // [Funções de suporte: lfsrBit, lfsrForward, setPackedBit, getPackedBit, buildCv02Bits mantidas aqui]
@@ -380,9 +381,9 @@ void loadFilterCacheNvs() {
   prefs.begin("dvs", true);
   for (int i = 0; i < 2; i++) {
     const char *k = i == 0 ? "filA" : "filB";
-    float s = prefs.getFloat(String(k) + "_slow", -1.0f);
-    float f = prefs.getFloat(String(k) + "_fast", -1.0f);
-    float t = prefs.getFloat(String(k) + "_thr", -1.0f);
+    float s = prefs.getFloat((String(k) + "_slow").c_str(), -1.0f);
+    float f = prefs.getFloat((String(k) + "_fast").c_str(), -1.0f);
+    float t = prefs.getFloat((String(k) + "_thr").c_str(), -1.0f);
     if (s > 0.05f && s < 0.99f && f > 0.05f && f < 0.99f && t > 0.01f && t < 10.0f) {
       gFilterCache[i].slow = s; gFilterCache[i].fast = f; gFilterCache[i].thr = t; gFilterCache[i].valid = true;
     }
@@ -395,9 +396,9 @@ void saveFilterCacheNvs(int i) {
   Preferences prefs;
   prefs.begin("dvs", false);
   const char *k = i == 0 ? "filA" : "filB";
-  prefs.putFloat(String(k) + "_slow", gFilterCache[i].slow);
-  prefs.putFloat(String(k) + "_fast", gFilterCache[i].fast);
-  prefs.putFloat(String(k) + "_thr", gFilterCache[i].thr);
+  prefs.putFloat((String(k) + "_slow").c_str(), gFilterCache[i].slow);
+  prefs.putFloat((String(k) + "_fast").c_str(), gFilterCache[i].fast);
+  prefs.putFloat((String(k) + "_thr").c_str(), gFilterCache[i].thr);
   prefs.end();
 }
 
@@ -486,13 +487,11 @@ void setupEspNow() { esp_wifi_set_max_tx_power(80);
 void setupI2S(audio_deck_state *deck, bool useApll) { i2s_config_t config = { .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX), .sample_rate = SAMPLE_RATE, .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT, .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT, .communication_format = I2S_COMM_FORMAT_STAND_I2S, .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1, .dma_buf_count = DMA_BUF_COUNT, .dma_buf_len = DMA_BUF_LEN, .use_apll = useApll, .tx_desc_auto_clear = true, .fixed_mclk = 0 }; i2s_pin_config_t pins = { .bck_io_num = deck->bckPin, .ws_io_num = deck->lrckPin, .data_out_num = deck->dataPin, .data_in_num = I2S_PIN_NO_CHANGE }; i2s_driver_install(deck->port, &config, 0, NULL); i2s_set_pin(deck->port, &pins); i2s_zero_dma_buffer(deck->port); }
 
 static inline void renderCv02Sample(audio_deck_state *deck, float rpm, int16_t *leftOut, int16_t *rightOut) {
-  if (millis() < deck->wrapGapEndMillis) { *leftOut = 0; *rightOut = 0; return; }
   float ratio = rpm / BASE_RPM; if(fabsf(ratio) < DEADZONE_RPM) ratio = 0.0f; if(ratio > MAX_RPM_RATIO) ratio = MAX_RPM_RATIO; if(ratio < -MAX_RPM_RATIO) ratio = -MAX_RPM_RATIO;
   int32_t phaseStep = (int32_t)(ratio * ((float)CV02_RESOLUTION * 65536.0f / SAMPLE_RATE));
-  deck->cv02Phase64 += (int64_t)phaseStep; int64_t cycle = (int64_t)(deck->cv02Phase64 >> 16);
-  if (cycle < 0) { deck->cv02Phase64 = (uint64_t)CV02_LENGTH << 16; deck->wrapGapEndMillis = millis() + WRAP_GAP_MS; *leftOut = 0; *rightOut = 0; return; }
-  if (cycle >= (int64_t)CV02_LENGTH) { deck->cv02Phase64 = CV02_START_PHASE; deck->wrapGapEndMillis = millis() + WRAP_GAP_MS; *leftOut = 0; *rightOut = 0; return; }
-  uint32_t cycleIndex = (uint32_t)cycle;
+  deck->cv02Phase64 += (int64_t)phaseStep; int64_t cycle = (int64_t)deck->cv02Phase64 >> 16;
+  int64_t ci = cycle % (int64_t)CV02_LENGTH; if (ci < 0) ci += (int64_t)CV02_LENGTH;
+  uint32_t cycleIndex = (uint32_t)ci;
   uint16_t tableIndex = (deck->cv02Phase64 >> 6) & (SIN_COS_TABLE_SIZE - 1);
   int16_t sine = sinTable[tableIndex]; int16_t cosine = cosTable[tableIndex];
   uint8_t bit = getPackedBit(cycleIndex); float modulation = bit ? 1.0f : 1.0f - ((-(float)cosine / 32767.0f + 1.0f) * 0.25f);
@@ -515,6 +514,9 @@ void audioTask(void *param) { audio_deck_state *deck = (audio_deck_state *)param
       deck->calibrating = true;
       deck->calibStableStart = 0;
       deck->filteredRpm = 0.0f;
+      if (deck->cv02Phase64 != 0 && millis() - deck->stopCandidateStart >= STOP_DEBOUNCE_MS + STOP_RESET_MS) {
+        deck->cv02Phase64 = CV02_START_PHASE;
+      }
     } else {
       if (deck->calibrating && gStartFadeMs > 0) deck->fadeStartMillis = millis();
       deck->calibStableStart = 0;
@@ -846,7 +848,7 @@ void sendTelemetry() {
     wrDelta[i] = audioWriteCount[i] - prevWriteCount[i];
     prevWriteCount[i] = audioWriteCount[i];
   }
-  Serial.printf("TELEM,%lu,%d,%d,%d,%d,%lu,%d,%d,%d,%d,%lu,%lu,%lu,%lu,%lu,%lu,%d,%d,%d,%d,%lu,%lu\n",
+  Serial.printf("TELEM,%lu,%d,%d,%d,%d,%lu,%d,%d,%d,%d,%lu,%lu,%lu,%lu,%lu,%lu,%d,%d,%d,%d,%lu,%lu,%lu\n",
     (unsigned long)now,
     (local[0].lastSeenMillis != 0 && now - local[0].lastSeenMillis <= DECK_TIMEOUT_MS) ? 1 : 0,
     (int)local[0].rssi, (int)local[0].batteryPct, (int)local[0].rpmCenti, (unsigned long)local[0].lostPackets,
