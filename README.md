@@ -2,6 +2,76 @@ Arquivos para contribuir com o DVS do repositorio https://github.com/FelipeAlme/
 
 ---
 
+# Medição da bateria do TX (guia rápido)
+
+O transmissor mede a tensão da bateria pelo pino **GPIO3** (`BATT_PIN`) usando um **divisor de tensão 2:1**. Sem o divisor, o ADC (máx ~3.3V com `ADC_11db`) não aguenta 4.2V e o firmware não mede nada útil.
+
+## Circuito: dois resistores de 10kΩ
+
+```
+ Bateria + ----[ R1 10kΩ ]----+---- GPIO3 (BATT_PIN)
+                              │
+                           [ R2 10kΩ ]
+                              │
+         Bateria − / GND ------┘
+```
+
+- **R1 (de cima):** liga do **positivo (+)** da bateria ao **GPIO3**.
+- **R2 (de baixo):** liga do **GPIO3** ao **negativo (−)**/GND da bateria.
+- O GPIO3 lê o **ponto central**: sempre metade da tensão da bateria.
+
+## Valores de referência
+
+| Bateria  | Tensão na bateria | Tensão no GPIO3 |
+|----------|-------------------|-----------------|
+| Cheia    | ~4.1–4.2V         | ~2.05–2.10V     |
+| Vazia    | ~3.3V              | ~1.65V          |
+
+## Configuração no firmware (`tx_c3_bmi270.ino`)
+
+- `BATT_PIN` — pino do ADC (padrão `3`). Deixe `-1` se não usar divisor.
+- `BATT_FULL_MV` / `BATT_EMPTY_MV` — tensões **no pino** (cheio/vazio). Já vêm calibradas para 10kΩ+10kΩ; ajuste-os ao seu hardware/deck.
+- `BATT_SAMPLE_MS` (2000) — intervalo de leitura; `BATT_AVG_SAMPLES` (8) — média por amostra.
+
+Sem os resistores ou com `BATT_PIN = -1`, o dashboard mostra `--` (o TX reporta 100%). O valor correto aparece na telemetria do dashboard (`%` ao lado de cada deck).
+
+---
+
+# TX battery measurement (quick guide)
+
+The transmitter measures battery voltage on pin **GPIO3** (`BATT_PIN`) using a **2:1 voltage divider**. Without the divider, the ADC (max ~3.3V with `ADC_11db`) cannot handle 4.2V and the firmware reads nothing useful.
+
+## Circuit: two 10kΩ resistors
+
+```
+ Battery + ----[ R1 10kΩ ]----+---- GPIO3 (BATT_PIN)
+                              │
+                           [ R2 10kΩ ]
+                              │
+         Battery − / GND -----┘
+```
+
+- **R1 (top):** connects from battery **positive (+)** to **GPIO3**.
+- **R2 (bottom):** connects from **GPIO3** to battery **negative (−)**/GND.
+- GPIO3 reads the **midpoint**: always half of the battery voltage.
+
+## Reference values
+
+| Battery | Battery voltage | GPIO3 voltage |
+|---------|-----------------|---------------|
+| Full    | ~4.1–4.2V        | ~2.05–2.10V   |
+| Empty   | ~3.3V           | ~1.65V        |
+
+## Firmware configuration (`tx_c3_bmi270.ino`)
+
+- `BATT_PIN` — ADC pin (default `3`). Set `-1` if not using a divider.
+- `BATT_FULL_MV` / `BATT_EMPTY_MV` — voltages **at the pin** (full/empty). Already calibrated for 10kΩ+10kΩ; adjust them for your hardware/deck.
+- `BATT_SAMPLE_MS` (2000) — sample interval; `BATT_AVG_SAMPLES` (8) — samples averaged per reading.
+
+Without the resistors or with `BATT_PIN = -1`, the dashboard shows `--` (TX reports 100%). The correct value appears in the dashboard telemetry (`%` next to each deck).
+
+---
+
 # Changelog | Release Notes
 
 ---
