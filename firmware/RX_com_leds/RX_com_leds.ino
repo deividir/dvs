@@ -37,7 +37,10 @@
 #define DAC_B_DATA_PIN  13
 
 #define ESPNOW_CHANNEL 11  // fallback: usado apenas se o scan de canais falhar
-#define USE_LONG_RANGE 0  // 0 = taxa normal (1Mbit, robusto em canal cheio), 1 = long range (OBRIGATORIO ser igual ao TX)
+#define USE_LONG_RANGE 1  // 0 = taxa normal (1Mbit, robusto em canal cheio), 1 = long range (OBRIGATORIO ser igual ao TX)
+// OBS: long range usa WIFI_PROTOCOL_LR (1Mbps, amplia sensibilidade/alcsencia);
+// o custo e mais trafego de ar por pacote. Funciona apenas se TODOS os modulos
+// (RX + os 2 TX) estiverem com o mesmo valor e reflashados.
 #define PROTOCOL_VERSION 2
 #define MSG_HELLO 1
 #define MSG_WELCOME 2
@@ -52,7 +55,7 @@
 #define CFG_ALPHA_SLOW 2
 #define CFG_ALPHA_FAST 3
 #define CFG_FAST_THRESHOLD 4
-#define PING_INTERVAL_MS 500
+#define PING_INTERVAL_MS 100
 #define DECK_TIMEOUT_MS 2500
 #define RX_BOOT_ID 0x5A
 
@@ -75,9 +78,6 @@
 #define OUTPUT_GAIN 0.70f
 #define CALIB_THRESHOLD_RPM 1.0f
 #define STOP_DEBOUNCE_MS 100
-// Apos o deck ficar parado por STOP_RESET_MS, o timecode volta ao ciclo 0
-// (como "levantar a agulha"). Em modo relativo o Serato resincroniza sozinho.
-#define STOP_RESET_MS 5000
 #define SIN_COS_TABLE_SIZE 1024
 
 // Fade de inicio (anti-"pio"): apos o toca-discos comecar a girar, o volume do
@@ -514,9 +514,6 @@ void audioTask(void *param) { audio_deck_state *deck = (audio_deck_state *)param
       deck->calibrating = true;
       deck->calibStableStart = 0;
       deck->filteredRpm = 0.0f;
-      if (deck->cv02Phase64 != 0 && millis() - deck->stopCandidateStart >= STOP_DEBOUNCE_MS + STOP_RESET_MS) {
-        deck->cv02Phase64 = CV02_START_PHASE;
-      }
     } else {
       if (deck->calibrating && gStartFadeMs > 0) deck->fadeStartMillis = millis();
       deck->calibStableStart = 0;

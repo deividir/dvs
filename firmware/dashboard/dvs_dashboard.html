@@ -115,6 +115,7 @@
   }
   .log-head label { display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
   .log-head input[type=checkbox] { accent-color: #58a6ff; width: 14px; height: 14px; cursor: pointer; }
+  .log-actions { display: flex; align-items: center; gap: 8px; }
   .log {
     max-height: 200px;
     overflow-y: auto;
@@ -417,6 +418,13 @@
   <div class="log-wrap">
     <div class="log-head">
       <span>Telemetria</span>
+      <span class="log-actions">
+        <input type="checkbox" id="chRecordLog" checked style="accent-color:#58a6ff;width:14px;height:14px;cursor:pointer;">
+        <label for="chRecordLog" style="cursor:pointer;">gravar sessão</label>
+        <button id="btnExportLog" class="btn small">Exportar .txt</button>
+        <button id="btnClearLog" class="btn small danger">Limpar</button>
+        <span id="logStatus" style="color:#8b949e;font-size:11px;"></span>
+      </span>
     </div>
     <div class="log" id="log"></div>
   </div>
@@ -471,6 +479,55 @@ function logLine(text, cls) {
   logEl.appendChild(line);
   while (logEl.children.length > 400) logEl.removeChild(logEl.firstChild);
   if ($('chAutoScroll').checked) logEl.scrollTop = logEl.scrollHeight;
+  if (!text.startsWith('RX: ')) recordSession(text);
+}
+
+// ------------------------- GRAVAÇÃO DE SESSÃO / EXPORTAÇÃO -------------------------
+// Arquiva em memória toda a linha recebida da serial (crua) + eventos derivados
+// (warnings, confirmações), com timestamp, para exportar em .txt após a sessão.
+const sessionLog = [];
+const SESSION_LOG_MAX = 50000;
+let sessionRecording = true;
+
+function nowStamp() {
+  const d = new Date();
+  return String(d.getHours()).padStart(2, '0') + ':' +
+         String(d.getMinutes()).padStart(2, '0') + ':' +
+         String(d.getSeconds()).padStart(2, '0');
+}
+
+function recordSession(text) {
+  if (!sessionRecording) return;
+  sessionLog.push('[' + nowStamp() + '] ' + text);
+  if (sessionLog.length > SESSION_LOG_MAX) sessionLog.shift();
+  const st = $('logStatus');
+  if (st) st.textContent = sessionLog.length + ' linhas';
+}
+
+function exportSessionLog() {
+  if (!sessionLog.length) { logLine('Nada gravado para exportar.', 'bad'); return; }
+  const header = 'DVS Session Log\n' + new Date().toLocaleString() + '\n' +
+                 'Linhas: ' + sessionLog.length + '\n' +
+                 '----------------------------------------\n';
+  const content = header + sessionLog.join('\n') + '\n';
+  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const d = new Date();
+  a.href = url;
+  a.download = 'dvs_log_' + d.toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.txt';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  logLine('Log exportado (' + sessionLog.length + ' linhas).', 'good');
+}
+
+function clearSessionLog() {
+  sessionLog.length = 0;
+  const st = $('logStatus');
+  if (st) st.textContent = '';
+  logLine('Gravação de sessão limpa.');
 }
 
 function rssiBars(rssi, container) {
@@ -1134,6 +1191,7 @@ async function readLoop() {
       while ((idx = buffer.indexOf('\n')) >= 0) {
         const line = buffer.slice(0, idx);
         buffer = buffer.slice(idx + 1);
+        recordSession('RAW> ' + line);
         handleLine(line);
       }
     }
@@ -1197,6 +1255,10 @@ window.disconnect = disconnect;
 
 // ------------------------- UI LISTENERS -------------------------
 $('btnUptime').addEventListener('click', () => sendSerialCmd('UPTIME'));
+
+$('btnExportLog').addEventListener('click', exportSessionLog);
+$('btnClearLog').addEventListener('click', clearSessionLog);
+$('chRecordLog').addEventListener('change', () => { sessionRecording = $('chRecordLog').checked; });
 
 $('btnTestA').addEventListener('click', () => { setToneStatus(0, false); $('toneStatusB').className = 'label'; sendSerialCmd('TEST_A'); });
 $('btnTestB').addEventListener('click', () => { setToneStatus(1, false); $('toneStatusA').className = 'label'; sendSerialCmd('TEST_B'); });

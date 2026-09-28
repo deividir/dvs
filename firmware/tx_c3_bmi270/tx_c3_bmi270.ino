@@ -18,15 +18,25 @@
 // ============ DEFINA O DECK DESTA PLACA ============
 // TX_DECK_ID: 1 = Deck A (deck 1), 2 = Deck B (deck 2)
 // Para gravar a placa do deck 2, mude para 2 e compile.
-#define TX_DECK_ID 2
+#define TX_DECK_ID 1
 // ===================================================
 #define DEFAULT_DECK_ID TX_DECK_ID
 uint8_t deckId = DEFAULT_DECK_ID;
 
 #define ESPNOW_CHANNEL 11  // apenas canal inicial/fallback; o pareamento descobre o canal do RX
-#define USE_LONG_RANGE 0  // 0 = taxa normal (1Mbit, robusto em canal cheio), 1 = long range (OBRIGATORIO ser igual ao RX)
+#define USE_LONG_RANGE 1  // 0 = taxa normal (1Mbit, robusto em canal cheio), 1 = long range (OBRIGATORIO ser igual ao RX)
+// OBS: long range usa WIFI_PROTOCOL_LR (1Mbps, amplia sensibilidade/alcance); o
+// custo e mais trafego de ar por pacote. Precisa ser IGUAL ao RX e ao outro TX;
+// ao alterar, regrave os 3 modulos (RX e os 2 TX) na mesma sessao.
 #define SEND_RATE_HZ 200
 #define SEND_INTERVAL_US (1000000UL / SEND_RATE_HZ)
+// TDMA: cada TX transmite na propria metade do frame de 5ms (TX A = fase 0,
+// TX B = fase 0.5 => 2500us), ambas ancoradas no relogio do RX via controles.
+#define TDMA_SLOT_WIDTH_US (SEND_INTERVAL_US / 2)
+// Margem no fim do slot: a leitura do gyro + airtime (~0.6ms) acontecem DEPOIS
+// da checagem; garantir o envio dentro deste guard evita invadir o slot vizinho.
+#define TDMA_SEND_GUARD_US 1000
+#define RX_ANCHOR_TIMEOUT_MS 5000
 // Pareamento por varredura: o TX pula pelos canais enviando HELLO ate o RX
 // (que fica fixo no canal mais limpo escolhido no boot dele) responder WELCOME.
 #define PAIR_CHANNEL_DWELL_MS 120  // tempo em cada canal antes de pular pro proximo
@@ -219,6 +229,14 @@ dvs_packet packet;
 
 volatile bool receiverReady = false;
 volatile uint32_t lastReceiverReplyMillis = 0;
+
+// Base de tempo TDMA: estimativa do relogio do RX a partir do ultimo controle
+// (WELCOME/PING trazem timestampMicros = micros() do RX no envio).
+volatile uint32_t rxClockAnchorMicros = 0;  // micros() do RX no ultimo controle recebido
+volatile uint32_t rxClockAnchorLocal = 0;   // micros() local quando recebeu o controle
+volatile uint32_t rxClockSeenMillis = 0;    // millis() local do recebimento (para expirar)
+volatile bool rxClockSynced = false;
+uint32_t tdmaLastSentFrame = 0xFFFFFFFFUL;    // ultimo frame RX em que este TX transmitiu (anti duplo envio)
 
 void setDeck(uint8_t newId) {
   if (newId != 1 && newId != 2) return;
@@ -429,7 +447,15 @@ void handleBootButton() {
   bootButtonPrev = pressed;
 }
 
+// Portal de envio: so sai um pacote por vez. Enquanto o anterior nao terminar
+// (callback), novos envios de dados sao descartados em vez de enfileirar e
+// saturar o buffer do ESP-NOW (comportamento que causa drops silenciosos).
+volatile bool espNowSendInFlight = false;
+volatile uint32_t espNowSendOk = 0;
+volatile uint32_t espNowSendFail = 0;
 void OnDataSent(const wifi_tx_info_t *info, esp_now_send_status_t status) {
+  espNowSendInFlight = false;
+  if (status == ESP_NOW_SEND_SUCCESS) espNowSendOk++; else espNowSendFail++;
 }
 
 void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *dataPtr, int len) {
@@ -451,6 +477,7 @@ void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *dataPtr, int len
     receiverReady = true;
     lastReceiverReplyMillis = millis();
     setOnboardLed(true);
+    parseRxClockBeacon(incoming.timestampMicros);
     if (incoming.msgType == MSG_WELCOME) {
       Serial.printf("TX_WELCOME_OK ch=%u\n", activeChannel);
     }
@@ -582,6 +609,41 @@ void sendControlMessage(uint8_t msgType) {
   esp_now_send(receiverMAC, (uint8_t *)&control, sizeof(control));
 }
 
+// ---- TDMA: base de tempo compartilhada via relogio do RX ----
+// Cada TX estima o relogio do RX extrapolando linearmente a partir do ultimo
+// controle recebido (que traz timestampMicros = micros() do RX). Com esse
+// relogio estimado, o TX transmite apenas na sua metade do frame de 5ms:
+//   deck A (1) -> slot [0, 2.5ms)  |  deck B (2) -> slot [2.5ms, 5ms)
+// Como ambos se alinham ao MESMO relogio (do RX), os slots nao colidem.
+void parseRxClockBeacon(uint32_t rxTimestampMicros) {
+  rxClockAnchorMicros = rxTimestampMicros;
+  rxClockAnchorLocal = micros();
+  rxClockSeenMillis = millis();
+  rxClockSynced = true;
+  tdmaLastSentFrame = 0xFFFFFFFFUL;  // novo relogio: forcaria novo envio no proximo slot
+}
+
+// micros() estimado do RX agora
+uint32_t estimatedRxMicrosNow() {
+  if (!rxClockSynced) return 0;
+  return rxClockAnchorMicros + (micros() - rxClockAnchorLocal);
+}
+
+// micros() local equivalente a um instante do relogio do RX
+uint32_t rxTimeToLocal(uint32_t rxMicros) {
+  return rxClockAnchorLocal + (rxMicros - rxClockAnchorMicros);
+}
+
+// Fase (offset no frame de 5ms) do slot deste deck
+uint32_t tdmaSlotOffsetUs() {
+  return (deckId == 1) ? 0 : TDMA_SLOT_WIDTH_US;
+}
+
+// Verifica se o relogio RX esta sincronizado (e recente)
+bool rxClockIsFresh() {
+  return rxClockSynced && (millis() - rxClockSeenMillis < RX_ANCHOR_TIMEOUT_MS);
+}
+
 void setup() {
   setupLED();
   pinMode(BOOT_BUTTON_PIN, INPUT_PULLUP);
@@ -619,6 +681,15 @@ void loop() {
   sampleBattery();
   if (batteryLevelPct < BATT_LOW_THRESHOLD_PCT) {
     setOnboardLed((millis() / BATT_LOW_BLINK_MS) % 2);
+  }
+
+  static uint32_t lastSendStatsMillis = 0;
+  if (millis() - lastSendStatsMillis >= 5000) {
+    lastSendStatsMillis = millis();
+    Serial.printf("TX_SEND_STAT ok=%lu fail=%lu inflight=%u\n",
+                  (unsigned long)espNowSendOk, (unsigned long)espNowSendFail, (unsigned)espNowSendInFlight);
+    espNowSendOk = 0;
+    espNowSendFail = 0;
   }
 
   if (deckId != 0 && !receiverReady) {
@@ -659,13 +730,47 @@ void loop() {
   uint32_t now = micros();
   if (deckId == 0) return;
 
-  if ((int32_t)(now - nextSendMicros) < 0) {
+  // Portal de envio: nao enfileira enquanto o pacote anterior esta no radio.
+  // (Antes, o esp_now_send silenciosamente descartava o novo envio.)
+  if (espNowSendInFlight) {
     return;
   }
 
-  nextSendMicros += SEND_INTERVAL_US;
-  if ((int32_t)(now - nextSendMicros) > (int32_t)SEND_INTERVAL_US) {
-    nextSendMicros = now + SEND_INTERVAL_US;
+  // TDMA: com o relogio do RX sincronizado, o disparo do proximo pacote e
+  // alinhado ao slot deste deck no relogio do RX (deck A sem offset, deck B
+  // com offset de 2.5ms). Assim os 2 TXs nunca transmitem ao mesmo tempo.
+  if (rxClockIsFresh()) {
+    uint32_t rxNow = estimatedRxMicrosNow();
+    uint32_t frameIdx = rxNow / SEND_INTERVAL_US;
+    uint32_t slotStartRx = frameIdx * SEND_INTERVAL_US + tdmaSlotOffsetUs();
+    uint32_t slotEndRx = slotStartRx + TDMA_SLOT_WIDTH_US;
+    // Slot deste deck: [slotStartRx, slotEndRx). Regra de agendamento:
+    //  - dentro do slot (com margem p/ gyro+airtime) e ainda nao enviou neste
+    //    frame -> envia agora e registra tdmaLastSentFrame;
+    //  - antes do slot -> espera o inicio do slot;
+    //  - depois (slot do OUTRO deck ou guard) -> espera o inicio do proximo frame.
+    bool insideSlot = ((int32_t)(rxNow - slotStartRx) >= 0) &&
+                      ((int32_t)(rxNow - (slotEndRx - TDMA_SEND_GUARD_US)) < 0);
+    if (insideSlot && tdmaLastSentFrame != frameIdx) {
+      nextSendMicros = now;  // dispara imediato dentro do slot
+    } else if ((int32_t)(rxNow - slotStartRx) < 0) {
+      nextSendMicros = rxTimeToLocal(slotStartRx);
+    } else {
+      nextSendMicros = rxTimeToLocal(slotStartRx + SEND_INTERVAL_US);
+    }
+  } else {
+    // Sem ancora do RX (ainda pareando): cadencia local livre imediata.
+    if ((int32_t)(now - nextSendMicros) < 0) {
+      return;
+    }
+    nextSendMicros += SEND_INTERVAL_US;
+    if ((int32_t)(now - nextSendMicros) > (int32_t)SEND_INTERVAL_US) {
+      nextSendMicros = now + SEND_INTERVAL_US;
+    }
+  }
+
+  if ((int32_t)(now - nextSendMicros) < 0) {
+    return;
   }
 
   float dps = 0.0f;
@@ -699,10 +804,19 @@ void loop() {
   packet.seq = sequenceNumber++;
   packet.timestampMicros = now;
 
-  // Jitter aleatorio 0-4ms evita colisao entre 2 TXs no mesmo canal (200Hz = 5ms)
-  delay(random(0, 5));
-
-  esp_now_send(receiverMAC, (uint8_t *)&packet, sizeof(packet));
+  // Portal: marca envio em andamento e transmite. O jitter aleatorio antigo
+  // (delay(random(0,5))) foi removido: a anti-colisao agora e deterministica
+  // via TDMA (slots diferentes por deck ancorados no relogio do RX).
+  espNowSendInFlight = true;
+  esp_err_t sendErr = esp_now_send(receiverMAC, (uint8_t *)&packet, sizeof(packet));
+  if (sendErr != ESP_OK) {
+    espNowSendInFlight = false;  // nao entrou na fila; libera o portal
+    Serial.printf("TX_SEND_ERR=%d\n", (int)sendErr);
+  } else if (rxClockSynced) {
+    // Registra o frame RX em que este pacote saiu, para nao duplicar o envio
+    // dentro do mesmo slot TDMA (o agendamento e reavaliado a cada iteracao).
+    tdmaLastSentFrame = estimatedRxMicrosNow() / SEND_INTERVAL_US;
+  }
 
   if (wasReceiverReady && millis() - lastReceiverReplyMillis > HANDSHAKE_TIMEOUT_MS) {
     receiverReady = false;
