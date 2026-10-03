@@ -36,8 +36,9 @@
 #define DAC_B_LRCK_PIN  14
 #define DAC_B_DATA_PIN  13
 
-#define ESPNOW_CHANNEL 11  // fallback: usado apenas se o scan de canais falhar
-#define USE_LONG_RANGE 1  // 0 = taxa normal (1Mbit, robusto em canal cheio), 1 = long range (OBRIGATORIO ser igual ao TX)
+#define ESPNOW_CHANNEL 11  // canal fixo de teste
+#define FORCE_FIXED_CHANNEL 1  // 1 = ignora scan/NVS durante o teste; 0 = usa a logica original
+#define USE_LONG_RANGE 0  // modo normal: menor tempo no ar e melhor para alta taxa de pacotes
 // OBS: long range usa WIFI_PROTOCOL_LR (1Mbps, amplia sensibilidade/alcsencia);
 // o custo e mais trafego de ar por pacote. Funciona apenas se TODOS os modulos
 // (RX + os 2 TX) estiverem com o mesmo valor e reflashados.
@@ -55,7 +56,7 @@
 #define CFG_ALPHA_SLOW 2
 #define CFG_ALPHA_FAST 3
 #define CFG_FAST_THRESHOLD 4
-#define PING_INTERVAL_MS 100
+#define PING_INTERVAL_MS 500
 #define DECK_TIMEOUT_MS 2500
 #define RX_BOOT_ID 0x5A
 
@@ -299,7 +300,11 @@ void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *dataPtr, int len
   const uint8_t *sourceMac = info->src_addr; uint8_t deckIndex = packet.deckId - 1; deck_state *state = &deckStates[deckIndex];
   int8_t rssi = (info->rx_ctrl != NULL) ? (int8_t)info->rx_ctrl->rssi : -127;
   portENTER_CRITICAL(&stateMux); memcpy(state->mac, sourceMac, 6); state->lastSeenMillis = millis(); state->rssi = rssi; state->batteryPct = packet.batteryPct; portEXIT_CRITICAL(&stateMux);
-  if (packet.msgType == MSG_HELLO) { portENTER_CRITICAL(&stateMux); memcpy(pendingWelcomeMac[deckIndex], sourceMac, 6); pendingWelcomeDeck[deckIndex] = packet.deckId; hasPendingWelcome[deckIndex] = true; portEXIT_CRITICAL(&stateMux); return; }
+  if (packet.msgType == MSG_HELLO) {
+    Serial.printf("HELLO_RX deck=%u ch=%u rssi=%d\n",
+                  (unsigned)packet.deckId, (unsigned)activeEspNowChannel, (int)rssi);
+    portENTER_CRITICAL(&stateMux); memcpy(pendingWelcomeMac[deckIndex], sourceMac, 6); pendingWelcomeDeck[deckIndex] = packet.deckId; hasPendingWelcome[deckIndex] = true; portEXIT_CRITICAL(&stateMux); return;
+  }
   if (packet.msgType == MSG_CALIB_ACK) { Serial.printf("CALIB_ACK deck=%d M=%.4f\n", packet.deckId, (float)packet.rpmCenti / 10000.0f); return; }
   if (packet.msgType != MSG_DATA) return;
   uint16_t lost = 0; portENTER_CRITICAL(&stateMux); if (state->seen) { uint32_t seqDelta = packet.seq - state->lastSeq; if (seqDelta > 1) lost = (uint16_t)min(seqDelta - 1, 65535UL); } if (!state->seen) state->firstSeenMillis = millis(); state->seen = true; state->rpmCenti = packet.rpmCenti; state->lastSeq = packet.seq; state->packetCount++; state->lostPackets += lost; state->lastGap = lost; state->winReceived++; state->winMissed += lost; portEXIT_CRITICAL(&stateMux);
@@ -425,6 +430,15 @@ void applyChannelToRadio() {
 // IMPORTANTE: rodar ANTES de ativar o modo Long Range — com WIFI_PROTOCOL_LR
 // puro o radio nao decodifica beacons padrao. Empates favorecem 1/6/11.
 void selectCleanChannel(bool force = false) {
+#if FORCE_FIXED_CHANNEL
+  // Modo de teste: mantem o RX em um canal conhecido para eliminar o scan
+  // como variavel do diagnostico. Os TXs ainda podem parear por varredura.
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);
+  activeEspNowChannel = ESPNOW_CHANNEL;
+  Serial.printf("RF_CHANNEL,%d (fixo para teste)\n", activeEspNowChannel);
+  return;
+#endif
   if (!force) {
     int saved = loadChannelNvs();
     if (saved >= 1 && saved <= 13) {
@@ -475,7 +489,7 @@ void selectCleanChannel(bool force = false) {
   Serial.printf("RF_CHANNEL,%d\n", activeEspNowChannel);
 }
 
-void setupEspNow() { esp_wifi_set_max_tx_power(80);
+void setupEspNow() { esp_wifi_set_max_tx_power(52);
 #if USE_LONG_RANGE
   esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_LR);
 #else
@@ -578,7 +592,7 @@ void audioTask(void *param) { audio_deck_state *deck = (audio_deck_state *)param
   } }
 
 void serviceEspNowControl() {
-  for (uint8_t i = 0; i < 2; i++) { uint8_t welcomeMacCopy[6]; uint8_t welcomeDeckCopy = 0; bool shouldSendWelcome = false; portENTER_CRITICAL(&stateMux); if (hasPendingWelcome[i]) { memcpy(welcomeMacCopy, pendingWelcomeMac[i], 6); welcomeDeckCopy = pendingWelcomeDeck[i]; hasPendingWelcome[i] = false; shouldSendWelcome = true; } portEXIT_CRITICAL(&stateMux); if (shouldSendWelcome) { sendControlMessage(welcomeMacCopy, welcomeDeckCopy, MSG_WELCOME);
+  for (uint8_t i = 0; i < 2; i++) { uint8_t welcomeMacCopy[6]; uint8_t welcomeDeckCopy = 0; bool shouldSendWelcome = false; portENTER_CRITICAL(&stateMux); if (hasPendingWelcome[i]) { memcpy(welcomeMacCopy, pendingWelcomeMac[i], 6); welcomeDeckCopy = pendingWelcomeDeck[i]; hasPendingWelcome[i] = false; shouldSendWelcome = true; } portEXIT_CRITICAL(&stateMux); if (shouldSendWelcome) { Serial.printf("WELCOME_TX deck=%u ch=%u\n", (unsigned)welcomeDeckCopy, (unsigned)activeEspNowChannel); sendControlMessage(welcomeMacCopy, welcomeDeckCopy, MSG_WELCOME);
     // Reaplica os filtros persistidos quando o deck reconecta: cobre o caso
     // do TX perder os valores no NVS do C3 (fonte de segurança).
     if (gFilterCache[i].valid) {

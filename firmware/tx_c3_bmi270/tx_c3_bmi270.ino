@@ -18,24 +18,24 @@
 // ============ DEFINA O DECK DESTA PLACA ============
 // TX_DECK_ID: 1 = Deck A (deck 1), 2 = Deck B (deck 2)
 // Para gravar a placa do deck 2, mude para 2 e compile.
-#define TX_DECK_ID 1
+#define TX_DECK_ID 2
 // ===================================================
 #define DEFAULT_DECK_ID TX_DECK_ID
 uint8_t deckId = DEFAULT_DECK_ID;
 
-#define ESPNOW_CHANNEL 11  // apenas canal inicial/fallback; o pareamento descobre o canal do RX
-#define USE_LONG_RANGE 1  // 0 = taxa normal (1Mbit, robusto em canal cheio), 1 = long range (OBRIGATORIO ser igual ao RX)
+#define ESPNOW_CHANNEL 11  // canal de teste; igual ao RX
+#define USE_LONG_RANGE 0  // modo normal: menor tempo no ar e melhor para alta taxa de pacotes
 // OBS: long range usa WIFI_PROTOCOL_LR (1Mbps, amplia sensibilidade/alcance); o
 // custo e mais trafego de ar por pacote. Precisa ser IGUAL ao RX e ao outro TX;
 // ao alterar, regrave os 3 modulos (RX e os 2 TX) na mesma sessao.
-#define SEND_RATE_HZ 200
+#define SEND_RATE_HZ 100
 #define SEND_INTERVAL_US (1000000UL / SEND_RATE_HZ)
 // TDMA: cada TX transmite na propria metade do frame de 5ms (TX A = fase 0,
 // TX B = fase 0.5 => 2500us), ambas ancoradas no relogio do RX via controles.
 #define TDMA_SLOT_WIDTH_US (SEND_INTERVAL_US / 2)
 // Margem no fim do slot: a leitura do gyro + airtime (~0.6ms) acontecem DEPOIS
 // da checagem; garantir o envio dentro deste guard evita invadir o slot vizinho.
-#define TDMA_SEND_GUARD_US 1000
+#define TDMA_SEND_GUARD_US 500
 #define RX_ANCHOR_TIMEOUT_MS 5000
 // Pareamento por varredura: o TX pula pelos canais enviando HELLO ate o RX
 // (que fica fixo no canal mais limpo escolhido no boot dele) responder WELCOME.
@@ -466,7 +466,7 @@ void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *dataPtr, int len
   dvs_packet incoming;
   memcpy(&incoming, dataPtr, sizeof(incoming));
 
-  Serial.printf("TX_RX_PKT: type=%u deckId=%u ver=%u ch=%u\n", incoming.msgType, incoming.deckId, incoming.version, activeChannel);
+  // Nao imprimir a cada pacote recebido: o callback precisa permanecer curto.
 
   if (incoming.version != PROTOCOL_VERSION || incoming.deckId != deckId) {
     Serial.printf("TX_FILTERED: ver mismatch(%u!=%u) or deckId(%u!=%u)\n", incoming.version, PROTOCOL_VERSION, incoming.deckId, deckId);
@@ -559,7 +559,7 @@ void setupEspNow() {
   Serial.print("MAC ESP32: ");
   Serial.println(WiFi.macAddress());
 
-  esp_err_t setErr = esp_wifi_set_max_tx_power(80); // potencia maxima de TX (20 dBm no C3)
+  esp_err_t setErr = esp_wifi_set_max_tx_power(52); // aproximadamente 13 dBm; evita saturacao a curta distancia
   int8_t txPower = 0;
   esp_wifi_get_max_tx_power(&txPower); // retorna em unidades de 0,25 dBm
 #if USE_LONG_RANGE
