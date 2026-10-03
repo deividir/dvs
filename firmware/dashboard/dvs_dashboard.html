@@ -1250,8 +1250,23 @@ async function disconnect() {
   logLine('Porta serial fechada.');
 }
 
+async function restartRX() {
+  if (!port) { logLine('Conecte primeiro.', 'bad'); return; }
+  if (!confirm('Reiniciar o RX?')) return;
+  logLine('Reiniciando RX...');
+  try {
+    const encoder = new TextEncoder();
+    await writer.write(encoder.encode('REBOOT\n'));
+  } catch (e) {
+    logLine('Falha ao enviar: ' + e.message, 'bad');
+    return;
+  }
+  setTimeout(() => { if (typeof disconnect === 'function') disconnect(); }, 1500);
+}
+
 window.connect = connect;
 window.disconnect = disconnect;
+window.restartRX = restartRX;
 
 // ------------------------- UI LISTENERS -------------------------
 $('btnUptime').addEventListener('click', () => sendSerialCmd('UPTIME'));

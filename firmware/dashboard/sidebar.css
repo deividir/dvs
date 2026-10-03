@@ -78,6 +78,12 @@
   border-top: 1px solid #30363d;
 }
 
+.sidebar-footer-row {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+
 .sidebar-status {
   display: flex;
   align-items: center;

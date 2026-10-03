@@ -39,7 +39,10 @@
           `).join('')}
         </nav>
         <div class="sidebar-footer">
-          <button id="sbConnectBtn" class="btn small" style="width:100%;">Conectar</button>
+          <div class="sidebar-footer-row">
+            <button id="sbConnectBtn" class="btn small" style="flex:1;">Conectar</button>
+            <button id="sbRestartBtn" class="btn small danger">Reiniciar</button>
+          </div>
           <div class="sidebar-status">
             <span class="sidebar-dot" id="sidebarDot"></span>
             <span id="sidebarStatus">Desconectado</span>
@@ -77,6 +80,12 @@
       } else {
         if (typeof window.connect === 'function') window.connect();
       }
+    });
+
+    // Restart button (each page exposes window.restartRX)
+    const restartBtn = document.getElementById('sbRestartBtn');
+    restartBtn.addEventListener('click', () => {
+      if (typeof window.restartRX === 'function') window.restartRX();
     });
   }
 
