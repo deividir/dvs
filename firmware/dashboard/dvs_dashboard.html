@@ -80,7 +80,6 @@
   .bad { color: #f85149; }
   .info-msg { color: #8b949e; font-size: 13px; margin-top: 8px; }
   .disc { display: block; margin: 8px auto; }
-  .wave { display: block; margin: 4px auto 10px; width: 100%; height: auto; border: 1px solid #21262d; border-radius: 6px; background: #0d1117; }
   .deck-home {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -132,6 +131,7 @@
   .calib-block h3 .aside { color: #8b949e; font-weight: 400; font-size: 12px; }
   .calib-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 0; font-size: 13px; }
   .calib-line .label { color: #8b949e; }
+  .calib-hint { color: #6e7681; font-size: 12px; line-height: 1.35; margin: 0 0 8px; }
   .calib-val { font-weight: 600; font-variant-numeric: tabular-nums; }
   .live-rpm { font-variant-numeric: tabular-nums; font-weight: 600; }
   input[type=number] { background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 5px 8px; font-size: 13px; font-variant-numeric: tabular-nums; width: 90px; }
@@ -143,29 +143,8 @@
   .test-line { display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 13px; flex-wrap: wrap; }
   .test-line .label { color: #8b949e; }
 
-  /* WiFi */
-  .channel-info { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  /* Badges de valor (usado em Geral) */
   .channel-badge { background: #1f6feb; color: #fff; padding: 4px 12px; border-radius: 20px; font-size: 14px; font-weight: 600; }
-  .scan-summary { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
-  .scan-ch { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid #30363d; border-radius: 8px; background: #0d1117; }
-  .scan-ch.recommended { border-color: #1a7f37; box-shadow: 0 0 0 1px #1a7f37 inset; }
-  .scan-ch .ch-num { width: 34px; text-align: center; font-weight: 700; font-size: 15px; color: #e6edf3; }
-  .scan-ch .ch-count { font-size: 13px; color: #8b949e; }
-  .scan-ch .ch-box { flex: 1; height: 8px; background: #21262d; border-radius: 4px; overflow: hidden; }
-  .scan-ch .ch-box > i { display: block; height: 100%; border-radius: 4px; transition: width 0.3s; }
-  .scan-ch .ch-med { width: 70px; text-align: right; font-size: 13px; font-variant-numeric: tabular-nums; }
-  .scan-tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
-  .scan-tbl th, .scan-tbl td { padding: 6px 10px; text-align: left; border-bottom: 1px solid #21262d; }
-  .scan-tbl th { color: #8b949e; font-weight: 600; }
-  .scan-tbl .sig { font-variant-numeric: tabular-nums; font-weight: 600; }
-  .sig-free { color: #3fb950; }
-  .sig-ok { color: #d29922; }
-  .sig-busy { color: #db6d28; }
-  .sig-crit { color: #f85149; }
-  .lvl-pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
-  .lvl-livre { background: #1a7f3740; color: #3fb950; }
-  .lvl-ocupado { background: #d2992240; color: #d29922; }
-  .lvl-critico { background: #f8514940; color: #f85149; }
 </style>
 </head>
 <body>
@@ -188,7 +167,6 @@
       <div class="card">
         <h2><span class="dot gray" id="dotA"></span> Deck <span class="deck">A</span></h2>
         <canvas class="disc" id="discA" width="120" height="120"></canvas>
-        <canvas class="wave" id="waveA" width="320" height="110"></canvas>
         <div class="deck-grid">
           <div class="row"><span class="label">Sinal (RSSI)</span><span class="value" id="rssiA">--<span class="rssi-bars" id="barsA"></span></span></div>
           <div class="row"><span class="label">Bateria TX</span><span class="value" id="battA">--<span class="battery-bar"><span class="battery-fill" id="battFillA" style="width:0%"></span></span></span></div>
@@ -211,7 +189,6 @@
       <div class="card">
         <h2><span class="dot gray" id="dotB"></span> Deck <span class="deck">B</span></h2>
         <canvas class="disc" id="discB" width="120" height="120"></canvas>
-        <canvas class="wave" id="waveB" width="320" height="110"></canvas>
         <div class="deck-grid">
           <div class="row"><span class="label">Sinal (RSSI)</span><span class="value" id="rssiB">--<span class="rssi-bars" id="barsB"></span></span></div>
           <div class="row"><span class="label">Bateria TX</span><span class="value" id="battB">--<span class="battery-bar"><span class="battery-fill" id="battFillB" style="width:0%"></span></span></span></div>
@@ -281,15 +258,21 @@
           <div class="calib-block">
             <h3>Filtros Deck A</h3>
             <div class="calib-line"><span class="label">alphaSlow</span><input id="cfgSlowA" type="number" step="0.01" value="0.50"></div>
+            <div class="calib-hint">Menor: mais suavização, menos ruído / Maior: resposta mais rápida, porém mais sensível ao ruído.</div>
             <div class="calib-line"><span class="label">alphaFast</span><input id="cfgFastA" type="number" step="0.01" value="0.70"></div>
+            <div class="calib-hint">0,70: ainda suaviza bastante. / 0,90: boa opção para scratch.</div>
             <div class="calib-line"><span class="label">threshold</span><input id="cfgThrA" type="number" step="0.05" value="0.15"></div>
+            <div class="calib-hint">Define a variação mínima para ativar o alphaFast.</div>
             <div class="calib-line"><button class="btn small" onclick="applyFilter(0)">Aplicar Deck A</button></div>
           </div>
           <div class="calib-block">
             <h3>Filtros Deck B</h3>
             <div class="calib-line"><span class="label">alphaSlow</span><input id="cfgSlowB" type="number" step="0.01" value="0.50"></div>
+            <div class="calib-hint">Menor: mais suavização, menos ruído / Maior: resposta mais rápida, porém mais sensível ao ruído.</div>
             <div class="calib-line"><span class="label">alphaFast</span><input id="cfgFastB" type="number" step="0.01" value="0.70"></div>
+            <div class="calib-hint">0,70: ainda suaviza bastante. / 0,90: boa opção para scratch.</div>
             <div class="calib-line"><span class="label">threshold</span><input id="cfgThrB" type="number" step="0.05" value="0.15"></div>
+            <div class="calib-hint">Define a variação mínima para ativar o alphaFast.</div>
             <div class="calib-line"><button class="btn small" onclick="applyFilter(1)">Aplicar Deck B</button></div>
           </div>
         </div>
@@ -321,49 +304,6 @@
         </div>
         <div class="test-line">
           <button id="btnTestOff" class="btn danger small">Parar todos</button>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ==================== WIFI ==================== -->
-  <section id="view-wifi" class="view">
-    <div class="inner">
-      <div class="card">
-        <h2>Canal Atual</h2>
-        <div class="channel-info">
-          <span class="label">Canal:</span>
-          <span class="channel-badge" id="currentChannel">--</span>
-        </div>
-      </div>
-      <div class="card">
-        <h2>Trocar Canal</h2>
-        <div class="toolbar" style="margin-bottom:8px;">
-          <span class="label">Novo canal (1-13):</span>
-          <input id="chInput" type="number" min="1" max="13" value="12" style="width:80px;">
-          <button id="btnChannel" class="btn small">Aplicar</button>
-          <button id="btnChannelScan" class="btn small">Escanear redes</button>
-        </div>
-        <div class="info-msg">O scan busca o canal menos congestionado e salva no NVS.</div>
-        <div class="info-msg" style="margin-top:12px;">
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:#e6edf3;">
-            <input type="checkbox" id="chAutoScroll" checked style="accent-color:#58a6ff;width:14px;height:14px;cursor:pointer;">
-            Autoscroll da telemetria
-          </label>
-        </div>
-      </div>
-      <div class="card">
-        <h2>Resultado do Scan</h2>
-        <div id="scanEmpty" class="info-msg">Pressione "Escanear redes" para mapear as redes 2.4 GHz do ambiente.</div>
-        <div id="scanSummary" class="scan-summary" style="display:none;"></div>
-        <div id="scanNetWrap" style="display:none;">
-          <div class="info-msg" style="margin-bottom:6px;"><span id="scanTotal"></span> — ordenadas do canal mais congestionado ao mais livre;</div>
-          <table class="scan-tbl">
-            <thead>
-              <tr><th>Canal</th><th>SSID</th><th>Sinal</th><th>Nível</th><th>Segurança</th></tr>
-            </thead>
-            <tbody id="scanNetTb"></tbody>
-          </table>
         </div>
       </div>
     </div>
@@ -419,6 +359,8 @@
     <div class="log-head">
       <span>Telemetria</span>
       <span class="log-actions">
+        <input type="checkbox" id="chAutoScroll" checked style="accent-color:#58a6ff;width:14px;height:14px;cursor:pointer;">
+        <label for="chAutoScroll" style="cursor:pointer;">autoscroll</label>
         <input type="checkbox" id="chRecordLog" checked style="accent-color:#58a6ff;width:14px;height:14px;cursor:pointer;">
         <label for="chRecordLog" style="cursor:pointer;">gravar sessão</label>
         <button id="btnExportLog" class="btn small">Exportar .txt</button>
@@ -440,7 +382,7 @@ let lastUpdate = 0;
 
 const $ = (id) => document.getElementById(id);
 
-const pageNames = { dashboard: 'RECEIVER MONITOR', calib: 'CALIBRAÇÃO', audio: 'TESTES DE ÁUDIO', wifi: 'WIFI', geral: 'GERAL' };
+const pageNames = { dashboard: 'RECEIVER MONITOR', calib: 'CALIBRAÇÃO', audio: 'TESTES DE ÁUDIO', geral: 'GERAL' };
 
 function showSection(page) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
@@ -478,7 +420,8 @@ function logLine(text, cls) {
   line.textContent = text;
   logEl.appendChild(line);
   while (logEl.children.length > 400) logEl.removeChild(logEl.firstChild);
-  if ($('chAutoScroll').checked) logEl.scrollTop = logEl.scrollHeight;
+  const autoScrollEl = $('chAutoScroll');
+  if (!autoScrollEl || autoScrollEl.checked) logEl.scrollTop = logEl.scrollHeight;
   if (!text.startsWith('RX: ')) recordSession(text);
 }
 
@@ -737,29 +680,6 @@ function setToneStatus(idx, on) {
   el.className = 'label ' + (on ? 'good' : '');
 }
 
-function drawWave(idx, samples) {
-  const cv = $(idx === 0 ? 'waveA' : 'waveB');
-  if (!cv) return;
-  const ctx = cv.getContext('2d');
-  const W = cv.width, H = cv.height;
-  ctx.clearRect(0, 0, W, H);
-  ctx.strokeStyle = '#21262d';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(0, H / 2);
-  ctx.lineTo(W, H / 2);
-  ctx.stroke();
-  ctx.strokeStyle = idx === 0 ? '#58a6ff' : '#3fb950';
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  for (let i = 0; i < samples.length; i++) {
-    const x = (i / (samples.length - 1)) * W;
-    const y = H / 2 - (samples[i] / 32768) * (H / 2 - 4);
-    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-  }
-  ctx.stroke();
-}
-
 // ------------------------- OUTROS PARSERS -------------------------
 function handleAudioStat(fields) {
   const decks = [
@@ -798,78 +718,6 @@ const cfgState = [
   { deckId: null, slow: null, fast: null, thr: null },
   { deckId: null, slow: null, fast: null, thr: null }
 ];
-
-let scanNets = [];
-let scanChosen = null;
-const AUTH_NAMES = {
-  0: 'Aberto', 1: 'WEP', 3: 'WPA-PSK', 4: 'WPA2-PSK',
-  5: 'WPA/WPA2', 7: 'WPA2-Ent', 8: 'WPA3-PSK', 9: 'WPA2/WPA3'
-};
-function sigClass(rssi) {
-  return rssi > -60 ? 'sig-free' : rssi > -70 ? 'sig-ok' : rssi > -80 ? 'sig-busy' : 'sig-crit';
-}
-function levelOf(rssi) {
-  return rssi > -60 ? 'Livre' : rssi > -70 ? 'Média' : rssi > -80 ? 'Ocupado' : 'Crítico';
-}
-function lvlPill(level) {
-  const cls = level === 'Livre' ? 'lvl-livre' : level === 'Média' ? 'lvl-ocupado' : 'lvl-critico';
-  return '<span class="lvl-pill ' + cls + '">' + level + '</span>';
-}
-function resetScanView() {
-  scanNets = [];
-  scanChosen = null;
-  $('scanNetTb').innerHTML = '';
-  $('scanSummary').innerHTML = '';
-  $('scanSummary').style.display = 'none';
-  $('scanNetWrap').style.display = 'none';
-  $('scanEmpty').style.display = '';
-}
-function renderScan() {
-  const byCh = {};
-  for (const n of scanNets) {
-    if (!byCh[n.ch]) byCh[n.ch] = { ch: n.ch, count: 0, sum: 0, nets: [] };
-    const c = byCh[n.ch];
-    c.count++;
-    c.sum += n.rssi;
-    c.nets.push(n);
-  }
-  const channels = Object.values(byCh).map(c => ({ ch: c.ch, count: c.count, avgRssi: Math.round(c.sum / c.count), nets: c.nets }));
-  const all = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13].map(chNum => {
-    const c = channels.find(x => x.ch === chNum);
-    return c || { ch: chNum, count: 0, avgRssi: -100, nets: [] };
-  });
-  const sorted = all.sort((a, b) => b.count - a.count || b.avgRssi - a.avgRssi);
-  const sumEl = $('scanSummary');
-  const tb = $('scanNetTb');
-  sumEl.innerHTML = '';
-  tb.innerHTML = '';
-  for (const c of sorted) {
-    const level = c.count === 0 ? 'Livre' : c.avgRssi > -60 ? 'Ocupado' : c.avgRssi > -70 ? 'Média' : 'Crítico';
-    const barCol = c.count === 0 ? '#1a7f37' : c.avgRssi > -60 ? '#d29922' : c.avgRssi > -70 ? '#db6d28' : '#f85149';
-    let pct = Math.max(4, Math.min(100, 30 + (c.count / 3) * 25));
-    if (c.count === 0) pct = 4;
-    sumEl.innerHTML += '<div class="scan-ch' + (c.ch === scanChosen ? ' recommended' : '') + '">' +
-      '<span class="ch-num">' + c.ch + '</span>' +
-      '<span class="ch-count">' + c.count + ' rede' + (c.count === 1 ? '' : 's') + '</span>' +
-      '<span class="ch-box"><i style="width:' + pct + '%;background:' + barCol + ';"></i></span>' +
-      '<span class="ch-med">' + (c.count === 0 ? '--' : c.avgRssi + ' dBm') + '</span>' +
-      '<span class="ch-med" style="width:auto;">' + lvlPill(level) + '</span>' +
-      (c.ch === scanChosen ? '<span class="lvl-pill lvl-livre">Escolhido</span>' : '') +
-      '</div>';
-    const nets = c.nets.slice().sort((a, b) => b.rssi - a.rssi);
-    for (const n of nets) {
-      const authName = AUTH_NAMES[n.auth] !== undefined ? AUTH_NAMES[n.auth] : ('#' + n.auth);
-      tb.innerHTML += '<tr><td>' + n.ch + '</td><td>' + n.ssid + '</td>' +
-        '<td class="sig ' + sigClass(n.rssi) + '">' + n.rssi + ' dBm</td>' +
-        '<td>' + lvlPill(levelOf(n.rssi)) + '</td>' +
-        '<td>' + authName + '</td></tr>';
-    }
-  }
-  $('scanTotal').textContent = 'Total: ' + scanNets.length + ' redes';
-  $('scanEmpty').style.display = 'none';
-  $('scanSummary').style.display = '';
-  $('scanNetWrap').style.display = '';
-}
 
 function renderCfg(idx) {
   const s = cfgState[idx];
@@ -912,23 +760,9 @@ function handleLoss(fields) {
   }
 }
 
-let scanActive = false;
 function handleLine(line) {
   line = line.trim();
   if (!line) return;
-  if (line.startsWith('WAVE,')) {
-    const p = line.split(',');
-    const deck = parseInt(p[1], 10);
-    if (deck === 1 || deck === 2) {
-      const samples = [];
-      for (let i = 2; i < p.length; i++) {
-        const v = parseInt(p[i], 10);
-        if (!isNaN(v)) samples.push(v);
-      }
-      if (samples.length >= 2) drawWave(deck - 1, samples);
-    }
-    return;
-  }
   if (line.startsWith('FADE_OK,')) {
     const fm = line.split(',')[1].trim().match(/^(\d+)/);
     if (fm) {
@@ -938,23 +772,6 @@ function handleLine(line) {
     }
     return;
   }
-  if (line.startsWith('SCAN_NET|')) {
-    const p = line.split('|');
-    if (p.length >= 4) {
-      const ch = parseInt(p[1], 10);
-      const rssi = parseInt(p[2], 10);
-      const auth = parseInt(p[3], 10);
-      const ssid = p.slice(4).join('|').trim() || '(oculta)';
-      scanNets.push({ ch, rssi, auth, ssid });
-      renderScan();
-    }
-    return;
-  }
-  if (line.startsWith('SCAN_DONE')) {
-    logLine('Scan concluído: ' + scanNets.length + ' rede(s).', 'good');
-    renderScan();
-    return;
-  }
   if (line.startsWith('RF_CHANNEL,')) {
     const raw = line.split(',')[1].trim();
     const chm = raw.match(/^(\d+)/);
@@ -962,14 +779,7 @@ function handleLine(line) {
       const ch = chm[1];
       $('chBadge').textContent = 'Canal ' + ch;
       $('chBadge').className = 'badge info';
-      $('currentChannel').textContent = ch;
-      $('currentChannel').className = 'channel-badge';
       logLine('Canal atual: ' + ch, 'good');
-      if (scanActive) {
-        scanChosen = parseInt(ch, 10);
-        scanActive = false;
-        renderScan();
-      }
     } else {
       logLine('RF_CHANNEL: ' + line, 'warn');
     }
@@ -1278,13 +1088,6 @@ $('chRecordLog').addEventListener('change', () => { sessionRecording = $('chReco
 $('btnTestA').addEventListener('click', () => { setToneStatus(0, false); $('toneStatusB').className = 'label'; sendSerialCmd('TEST_A'); });
 $('btnTestB').addEventListener('click', () => { setToneStatus(1, false); $('toneStatusA').className = 'label'; sendSerialCmd('TEST_B'); });
 $('btnTestOff').addEventListener('click', () => sendSerialCmd('TEST_OFF'));
-
-$('btnChannel').addEventListener('click', () => {
-  const ch = parseInt($('chInput').value, 10);
-  if (!(ch >= 1 && ch <= 13)) { logLine('Canal inválido — use 1 a 13.', 'bad'); return; }
-  sendSerialCmd('CHANNEL ' + ch);
-});
-$('btnChannelScan').addEventListener('click', () => { resetScanView(); scanActive = true; logLine('Escaneando melhor canal...'); sendCmd('SCAN'); });
 
 // Brilho dos LEDs: slider com debounce (envia ao soltar/parar de arrastar)
 $('ledBrightInput').addEventListener('input', () => {
