@@ -224,7 +224,7 @@
           <div class="calib-block">
             <h3>Deck A <span class="aside">(TX_DECK_ID 1)</span></h3>
             <div class="calib-line"><span class="label">RPM ao vivo</span><span class="live-rpm" id="liveRpm0">--</span></div>
-            <div class="calib-line"><span class="label">Multiplicador atual no TX</span><input id="calK0" type="number" step="0.0001" value="0.999"></div>
+            <div class="calib-line"><span class="label">Multiplicador atual no TX</span><input id="calK0" type="number" step="0.0001" value="0.9974"></div>
             <div class="calib-line"><button class="btn small" onclick="captureCalib(0,0)">0%</button><span class="calib-val" id="calR0_0">--</span></div>
             <div class="calib-line"><button class="btn small" onclick="captureCalib(0,1)">+8%</button><span class="calib-val" id="calR0_1">--</span></div>
             <div class="calib-line"><button class="btn small" onclick="captureCalib(0,2)">-8%</button><span class="calib-val" id="calR0_2">--</span></div>
@@ -350,6 +350,33 @@
           <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:#e6edf3;"><input id="slot2B" type="checkbox" onchange="changeSlotDeck(2, 2)" style="accent-color:#58a6ff;width:15px;height:15px;cursor:pointer;">Deck B</label>
         </div>
         <div class="info-msg">O estado dos checkboxes reflete o deck atual de cada caixa (confirmado pelo TX via ESP-NOW).</div>
+      </div>
+
+      <div class="card">
+        <h2>Potência de transmissão TX <span style="color:#8b949e;font-weight:400;font-size:13px;">(via ESP-NOW)</span></h2>
+        <div class="toolbar" style="margin-bottom:8px;">
+          <span class="label" style="width:120px;">TX Deck A:</span>
+          <select id="txPowerA" style="min-width:150px;">
+            <option value="40">10 dBm (40)</option>
+            <option value="52" selected>13 dBm (52)</option>
+            <option value="64">16 dBm (64)</option>
+            <option value="72">18 dBm (72)</option>
+            <option value="80">20 dBm (80)</option>
+          </select>
+          <button id="btnTxPowerA" class="btn small">Aplicar Deck A</button>
+        </div>
+        <div class="toolbar" style="margin-bottom:8px;">
+          <span class="label" style="width:120px;">TX Deck B:</span>
+          <select id="txPowerB" style="min-width:150px;">
+            <option value="40">10 dBm (40)</option>
+            <option value="52" selected>13 dBm (52)</option>
+            <option value="64">16 dBm (64)</option>
+            <option value="72">18 dBm (72)</option>
+            <option value="80">20 dBm (80)</option>
+          </select>
+          <button id="btnTxPowerB" class="btn small">Aplicar Deck B</button>
+        </div>
+        <div class="info-msg">Os valores entre parênteses são unidades de 0,25 dBm. Nesta etapa, o dashboard já envia os comandos; o RX e os TXs precisam receber a atualização de firmware correspondente.</div>
       </div>
     </div>
   </section>
@@ -868,6 +895,17 @@ function handleLine(line) {
     logLine('RX: ' + line, 'good');
     return;
   }
+  if (line.startsWith('TX_POWER_OK,')) {
+    const p = line.split(',');
+    if (p.length >= 3) {
+      if (['40', '52', '64', '72', '80'].includes(p[1])) $('txPowerA').value = p[1];
+      if (['40', '52', '64', '72', '80'].includes(p[2])) $('txPowerB').value = p[2];
+      logLine('Potências TX atuais: Deck A ' + p[1] + ' (' + (parseInt(p[1], 10) / 4).toFixed(2) + ' dBm), Deck B ' + p[2] + ' (' + (parseInt(p[2], 10) / 4).toFixed(2) + ' dBm).', 'good');
+    } else {
+      logLine('RX: ' + line, 'good');
+    }
+    return;
+  }
   if (line.startsWith('LOSS_PCT,')) {
     handleLoss(line.split(','));
     return;
@@ -1027,6 +1065,7 @@ async function connect() {
     sendSerialCmd('FADE');
     sendSerialCmd('FILTER? 1');
     sendSerialCmd('FILTER? 2');
+    sendSerialCmd('TX_POWER?');
     readLoop();
   } catch (e) {
     logLine('Falha ao conectar: ' + e.message, 'bad');
@@ -1112,6 +1151,22 @@ function initDacVolSlider(id, deck) {
 }
 initDacVolSlider('A', 1);
 initDacVolSlider('B', 2);
+
+// Potência dos TXs: o RX encaminhará TX_POWER ao transmissor correspondente.
+function applyTxPower(deck) {
+  const id = deck === 1 ? 'txPowerA' : 'txPowerB';
+  const value = parseInt($(id).value, 10);
+  const allowed = [40, 52, 64, 72, 80];
+  if (!allowed.includes(value)) {
+    logLine('Potência inválida para o Deck ' + (deck === 1 ? 'A' : 'B') + '.', 'bad');
+    return;
+  }
+  sendSerialCmd('TX_POWER ' + deck + ' ' + value);
+  logLine('Potência TX Deck ' + (deck === 1 ? 'A' : 'B') + ': ' + value + ' (' + (value / 4).toFixed(2) + ' dBm)');
+}
+
+$('btnTxPowerA').addEventListener('click', () => applyTxPower(1));
+$('btnTxPowerB').addEventListener('click', () => applyTxPower(2));
 
 // Fade de início: slider (0-1000ms) enviam ao soltar
 $('fadeInput').addEventListener('input', () => {

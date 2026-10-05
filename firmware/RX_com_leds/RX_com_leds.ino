@@ -56,6 +56,7 @@
 #define CFG_ALPHA_SLOW 2
 #define CFG_ALPHA_FAST 3
 #define CFG_FAST_THRESHOLD 4
+#define CFG_TX_POWER 5
 #define PING_INTERVAL_MS 500
 #define DECK_TIMEOUT_MS 2500
 #define RX_BOOT_ID 0x5A
@@ -203,6 +204,7 @@ volatile uint32_t buffMinPct[2] = {100, 100};
 
 // Canal ESP-NOW em uso (definido pelo scan no boot; ESPNOW_CHANNEL e o fallback).
 uint8_t activeEspNowChannel = ESPNOW_CHANNEL;
+uint8_t txPowerQdbm[2] = {52, 52};
 
 void buildSinCosTables() {
   for (int i = 0; i < SIN_COS_TABLE_SIZE; i++) {
@@ -292,6 +294,7 @@ void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *dataPtr, int len
       case CFG_ALPHA_SLOW: name = "alphaSlow"; break;
       case CFG_ALPHA_FAST: name = "alphaFast"; break;
       case CFG_FAST_THRESHOLD: name = "threshold"; break;
+      case CFG_TX_POWER: name = "txPowerQdbm"; break;
     }
     if (packet.batteryPct == CFG_DECK_ID) Serial.printf("CFG_ACK,deck=%u,%s=%d\n", packet.deckId, name, packet.rpmCenti);
     else Serial.printf("CFG_ACK,deck=%u,%s=%.3f\n", packet.deckId, name, (float)packet.rpmCenti / 1000.0f);
@@ -372,6 +375,24 @@ void saveDeckVolumeNvs(int deckIndex, float v) {
   Preferences prefs;
   prefs.begin("dvs", false);
   prefs.putFloat(deckIndex == 0 ? "volA" : "volB", v);
+  prefs.end();
+}
+
+void loadTxPowerNvs() {
+  Preferences prefs;
+  prefs.begin("dvs", true);
+  for (int i = 0; i < 2; i++) {
+    int saved = prefs.getInt(i == 0 ? "pwrA" : "pwrB", 52);
+    if (saved == 40 || saved == 52 || saved == 64 || saved == 72 || saved == 80) txPowerQdbm[i] = (uint8_t)saved;
+  }
+  prefs.end();
+}
+
+void saveTxPowerNvs(int deckIndex) {
+  if (deckIndex < 0 || deckIndex > 1) return;
+  Preferences prefs;
+  prefs.begin("dvs", false);
+  prefs.putInt(deckIndex == 0 ? "pwrA" : "pwrB", (int)txPowerQdbm[deckIndex]);
   prefs.end();
 }
 
@@ -601,6 +622,8 @@ void serviceEspNowControl() {
       sendParamCommand(welcomeDeckCopy, CFG_ALPHA_FAST, (int16_t)lroundf(gFilterCache[i].fast * 1000.0f));
       sendParamCommand(welcomeDeckCopy, CFG_FAST_THRESHOLD, (int16_t)lroundf(gFilterCache[i].thr * 1000.0f));
     }
+    Serial.printf("POWER_REAPPLY deck=%u qdbm=%u\n", (unsigned)welcomeDeckCopy, (unsigned)txPowerQdbm[welcomeDeckCopy - 1]);
+    sendParamCommand(welcomeDeckCopy, CFG_TX_POWER, (int16_t)txPowerQdbm[welcomeDeckCopy - 1]);
   } }
   uint32_t nowMillis = millis(); for (uint8_t i = 0; i < 2; i++) { uint8_t macCopy[6]; bool shouldPing = false; portENTER_CRITICAL(&stateMux); deck_state *state = &deckStates[i]; if (state->lastSeenMillis != 0 && nowMillis - state->lastSeenMillis <= DECK_TIMEOUT_MS && nowMillis - state->lastPingMillis >= PING_INTERVAL_MS) { memcpy(macCopy, state->mac, 6); state->lastPingMillis = nowMillis; shouldPing = true; } portEXIT_CRITICAL(&stateMux); if (shouldPing) sendControlMessage(macCopy, i + 1, MSG_PING); }
 }
@@ -743,6 +766,29 @@ void handleSerialCommand() {
           }
           if (sent == 0) Serial.println("CFG_ERR: nenhum deck com sinal");
           else Serial.printf("FILTER_SENT decks=%u slow=%.3f fast=%.3f thr=%.3f\n", sent, slow, fast, thr);
+        }
+      } else if (cmdLine.startsWith("TX_POWER?")) {
+        Serial.printf("TX_POWER_OK,%u,%u\n", (unsigned)txPowerQdbm[0], (unsigned)txPowerQdbm[1]);
+      } else if (cmdLine.startsWith("TX_POWER")) {
+        int deck = 0, power = 0;
+        int n = sscanf(cmdLine.c_str(), "TX_POWER %d %d", &deck, &power);
+        if (n != 2 || (deck != 1 && deck != 2) ||
+            !(power == 40 || power == 52 || power == 64 || power == 72 || power == 80)) {
+          Serial.println("TX_POWER_ERR: use TX_POWER <deck 1|2> <40|52|64|72|80>");
+        } else {
+          uint8_t d = (uint8_t)(deck - 1);
+          uint32_t last = 0;
+          portENTER_CRITICAL(&stateMux);
+          last = deckStates[d].lastSeenMillis;
+          portEXIT_CRITICAL(&stateMux);
+          if (last == 0) {
+            Serial.printf("TX_POWER_ERR: deck %d sem sinal\n", deck);
+          } else {
+            txPowerQdbm[d] = (uint8_t)power;
+            saveTxPowerNvs(d);
+            sendParamCommand((uint8_t)deck, CFG_TX_POWER, (int16_t)power);
+            Serial.printf("TX_POWER_SENT deck=%d qdbm=%d dbm=%.2f\n", deck, power, power / 4.0f);
+          }
         }
       } else if (cmdLine.startsWith("LED_BRIGHT")) {
         String arg = cmdLine.substring(10);
@@ -904,6 +950,7 @@ void setup() {
   audioDecks[0].volume = loadDeckVolumeNvs(0);
   audioDecks[1].volume = loadDeckVolumeNvs(1);
   gStartFadeMs = loadStartFadeNvs();
+  loadTxPowerNvs();
   loadFilterCacheNvs();
   ledPwmOk[0] = ledcAttach(LED_DECK_A, 5000, 8);
   ledPwmOk[1] = ledcAttach(LED_DECK_B, 5000, 8);

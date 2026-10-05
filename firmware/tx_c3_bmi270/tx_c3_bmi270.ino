@@ -60,6 +60,8 @@ uint8_t deckId = DEFAULT_DECK_ID;
 #define CFG_ALPHA_SLOW 2
 #define CFG_ALPHA_FAST 3
 #define CFG_FAST_THRESHOLD 4
+#define CFG_TX_POWER 5
+#define TX_POWER_QDBM_DEFAULT 52
 
 // LED onboard azul do ESP32-C3 Super Mini (ativo em LOW).
 // Feedback de estado: Sem Deck = 3 piscadas, Deck A = 1, Deck B = 2.
@@ -122,7 +124,7 @@ float DEADZONE_RPM = 0.20f;
 #if TX_DECK_ID == 2
 #define RPM_MULTIPLIER 0.9974f
 #else
-#define RPM_MULTIPLIER 0.999f
+#define RPM_MULTIPLIER 0.9974f
 #endif
 
 // Multiplicador de velocidade em runtime: vem do #define acima como default,
@@ -130,6 +132,7 @@ float DEADZONE_RPM = 0.20f;
 // (Preferences) para persistir entre boots. Assim nao precisa reaplicar firmware
 // com cabo a cada calibracao do pitch.
 float rpmMultiplier = RPM_MULTIPLIER;
+uint8_t txPowerQdbm = TX_POWER_QDBM_DEFAULT;
 
 void loadRpmMultiplierNvs() {
   Preferences prefs;
@@ -144,6 +147,23 @@ void saveRpmMultiplierNvs() {
   Preferences prefs;
   if (prefs.begin("dvs", false)) {
     prefs.putFloat("rpmMult", rpmMultiplier);
+    prefs.end();
+  }
+}
+
+void loadTxPowerNvs() {
+  Preferences prefs;
+  if (prefs.begin("dvs", true)) {
+    int saved = prefs.getInt("txPower", TX_POWER_QDBM_DEFAULT);
+    if (saved == 40 || saved == 52 || saved == 64 || saved == 72 || saved == 80) txPowerQdbm = (uint8_t)saved;
+    prefs.end();
+  }
+}
+
+void saveTxPowerNvs() {
+  Preferences prefs;
+  if (prefs.begin("dvs", false)) {
+    prefs.putInt("txPower", (int)txPowerQdbm);
     prefs.end();
   }
 }
@@ -520,6 +540,14 @@ void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *dataPtr, int len
         else return;
         break;
       }
+      case CFG_TX_POWER:
+        if (v == 40 || v == 52 || v == 64 || v == 72 || v == 80) {
+          txPowerQdbm = (uint8_t)v;
+          esp_wifi_set_max_tx_power(txPowerQdbm);
+          saveTxPowerNvs();
+          Serial.printf("TX_POWER_OK,qdbm=%u,dbm=%.2f\n", (unsigned)txPowerQdbm, txPowerQdbm / 4.0f);
+        } else return;
+        break;
       default:
         return;
     }
@@ -559,7 +587,7 @@ void setupEspNow() {
   Serial.print("MAC ESP32: ");
   Serial.println(WiFi.macAddress());
 
-  esp_err_t setErr = esp_wifi_set_max_tx_power(52); // aproximadamente 13 dBm; evita saturacao a curta distancia
+  esp_err_t setErr = esp_wifi_set_max_tx_power(txPowerQdbm);
   int8_t txPower = 0;
   esp_wifi_get_max_tx_power(&txPower); // retorna em unidades de 0,25 dBm
 #if USE_LONG_RANGE
@@ -661,8 +689,10 @@ void setup() {
   loadDeckIdNvs();
   loadFilterNvs();
   loadRpmMultiplierNvs();
+  loadTxPowerNvs();
   setupBMI270();
   Serial.printf("RPM_MULTIPLIER_ATIVO=%.4f\n", rpmMultiplier);
+  Serial.printf("TX_POWER_ATIVO=%u (%.2f dBm)\n", (unsigned)txPowerQdbm, txPowerQdbm / 4.0f);
   Serial.printf("FILTERS_ATIVOS slow=%.3f fast=%.3f thr=%.3f\n", ALPHA_SLOW, ALPHA_FAST, FAST_THRESHOLD_RPM);
   setupEspNow();
   autoCalibrateGyroZ();

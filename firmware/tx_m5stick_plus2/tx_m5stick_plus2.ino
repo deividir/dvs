@@ -7,7 +7,7 @@
  Botoes:
    BtnA (frente)        : alterna Sem Deck -> A -> B
    BtnB (lateral)       : troca de pagina (principal / diagnostico)
-   BtnB (segurar ~1s)   : recalibra o gyro (deixe o prato parado)
+   BtnB (segurar 5 s)   : desliga o equipamento
 
  Biblioteca necessaria: M5Unified (instala M5GFX junto).
  Placa no Arduino IDE: a do seu modelo (M5StickC Plus / Plus2 / StickS3).
@@ -20,11 +20,12 @@
 #include <esp_now.h>
 #include <esp_wifi.h>
 #include <esp_idf_version.h>
+#include <esp_sleep.h>
 #include <Preferences.h>
 #include <math.h>
 
 // ============ CONFIGURACAO ============
-#define TX_DECK_ID 1            // Deck B para operar junto com o TX C3 configurado como Deck A
+#define TX_DECK_ID 2            // Deck B para operar junto com o TX C3 configurado como Deck A
 #define ESPNOW_CHANNEL 11       // canal fixo de teste, igual ao RX
 #define FORCE_FIXED_CHANNEL 1   // 1 = usa diretamente o canal do RX durante o teste
 #define FORCE_DECK_ID 1         // 1 = ignora deck antigo salvo na NVS durante o teste
@@ -40,6 +41,7 @@
 #define LCD_ROTATION 1          // 1 = paisagem; use 3 para girar 180 graus
 #define LCD_BRIGHTNESS 60       // menor brilho = mais autonomia (bateria de 200 mAh)
 #define MPU6886_FAST_ODR 1      // StickC Plus/Plus2: sobe a amostragem do gyro de ~166 Hz para 1 kHz
+#define POWER_OFF_HOLD_MS 5000  // tempo segurando o BtnB para desligar
 // ======================================
 
 uint8_t receiverMAC[] = { 0x14, 0xC1, 0x9F, 0x2C, 0xDE, 0x7C };
@@ -68,6 +70,7 @@ uint8_t receiverMAC[] = { 0x14, 0xC1, 0x9F, 0x2C, 0xDE, 0x7C };
 #define CFG_ALPHA_SLOW 2
 #define CFG_ALPHA_FAST 3
 #define CFG_FAST_THRESHOLD 4
+#define CFG_TX_POWER 5
 
 static const uint8_t pairChannels[] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 };
 static const uint8_t pairChannelCount = sizeof(pairChannels) / sizeof(pairChannels[0]);
@@ -78,6 +81,7 @@ float ALPHA_FAST = 0.70f;
 float FAST_THRESHOLD_RPM = 0.15f;
 float DEADZONE_RPM = 0.20f;
 float rpmMultiplier = 1.0f;     // ajustado via CALIB_A/B do RX e salvo em NVS
+uint8_t txPowerQdbm = TX_POWER_QDBM;
 
 // Auto-calibracao do offset do gyro (parado)
 #define AUTO_CALIBRATION_STABLE_SAMPLES 400
@@ -141,7 +145,6 @@ volatile int8_t rxRssi = -127;
 volatile uint16_t statSentPerSec = 0, statOkPerSec = 0, statFailPerSec = 0;
 volatile bool calibrating = false;
 volatile bool uiReqCycleDeck = false;
-volatile bool uiReqRecal = false;
 volatile uint8_t uiPage = 0;
 
 // ================= NVS (gravacao adiada, nunca no callback) =================
@@ -187,6 +190,23 @@ void flushNvs() {
   if ((flags & DIRTY_DECK) && (deckId == 1 || deckId == 2)) prefs.putUChar("deckId", deckId);
   if (flags & DIRTY_CHAN) prefs.putInt("chan", (int)activeChannel);
   prefs.end();
+}
+
+void loadTxPowerNvs() {
+  Preferences prefs;
+  if (prefs.begin("dvs", true)) {
+    int saved = prefs.getInt("txPower", TX_POWER_QDBM);
+    if (saved == 40 || saved == 52 || saved == 64 || saved == 72 || saved == 80) txPowerQdbm = (uint8_t)saved;
+    prefs.end();
+  }
+}
+
+void saveTxPowerNvs() {
+  Preferences prefs;
+  if (prefs.begin("dvs", false)) {
+    prefs.putInt("txPower", (int)txPowerQdbm);
+    prefs.end();
+  }
 }
 
 // ================= IMU =================
@@ -425,6 +445,15 @@ void serviceCommands() {
         case CFG_ALPHA_SLOW: if (f > 0.05f && f < 0.99f) { ALPHA_SLOW = f; ok = true; } break;
         case CFG_ALPHA_FAST: if (f > 0.05f && f < 0.99f) { ALPHA_FAST = f; ok = true; } break;
         case CFG_FAST_THRESHOLD: if (f > 0.01f && f < 10.0f) { FAST_THRESHOLD_RPM = f; ok = true; } break;
+        case CFG_TX_POWER:
+          if (c.value == 40 || c.value == 52 || c.value == 64 || c.value == 72 || c.value == 80) {
+            txPowerQdbm = (uint8_t)c.value;
+            esp_wifi_set_max_tx_power(txPowerQdbm);
+            saveTxPowerNvs();
+            ok = true;
+            Serial.printf("TX_POWER_OK,qdbm=%u,dbm=%.2f\n", (unsigned)txPowerQdbm, txPowerQdbm / 4.0f);
+          }
+          break;
       }
       if (ok) {
         if (c.param != CFG_DECK_ID) markDirty(DIRTY_FILTER);
@@ -454,7 +483,7 @@ void serviceAcks() {
 void setupEspNow() {
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
-  esp_wifi_set_max_tx_power(TX_POWER_QDBM);
+  esp_wifi_set_max_tx_power(txPowerQdbm);
 #if USE_LONG_RANGE
   esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_LR);
 #else
@@ -470,7 +499,7 @@ void setupEspNow() {
   esp_now_register_send_cb(OnDataSent);
   esp_now_register_recv_cb(OnDataRecv);
   addReceiverPeer(activeChannel);
-  Serial.printf("MAC: %s  LR=%d\n", WiFi.macAddress().c_str(), USE_LONG_RANGE);
+  Serial.printf("MAC: %s  LR=%d power=%.2f dBm\n", WiFi.macAddress().c_str(), USE_LONG_RANGE, txPowerQdbm / 4.0f);
 }
 
 void statsTick(uint32_t nowMs) {
@@ -614,13 +643,39 @@ void drawUi() {
   if (canvasOk) canvas.pushSprite(0, 0);
 }
 
+// Desliga de verdade: sem bateria o powerOff() corta tudo; com USB a placa continua
+// alimentada, entao paramos o rádio e entramos em deep sleep (BtnA acorda).
+void shutdownDevice() {
+  M5.Display.fillScreen(TFT_BLACK);
+  M5.Display.setTextColor(TFT_RED, TFT_BLACK);
+  M5.Display.setTextDatum(middle_center);
+  M5.Display.setFont(&fonts::Font4);
+  M5.Display.drawString("DESLIGANDO...", M5.Display.width() / 2, M5.Display.height() / 2);
+  delay(600);
+
+  esp_now_deinit();
+  esp_wifi_stop();
+  M5.Display.setBrightness(0);
+  M5.Display.sleep();
+
+  M5.Power.powerOff();          // sem USB: corta a energia aqui
+  delay(200);
+
+  // Com USB: ainda estamos vivos. Deep sleep, acorda no BtnA (GPIO37, ativo em nivel baixo).
+  esp_sleep_enable_ext0_wakeup(GPIO_NUM_37, 0);
+  esp_deep_sleep_start();
+}
+
 void uiTask(void *) {
   uint32_t lastBat = 0;
   for (;;) {
     M5.update();
     if (M5.BtnA.wasClicked()) uiReqCycleDeck = true;
-    if (M5.BtnB.wasHold()) uiReqRecal = true;
-    else if (M5.BtnB.wasClicked()) uiPage = (uiPage + 1) % 2;
+
+    // BtnB segurado POWER_OFF_HOLD_MS: desliga
+    if (M5.BtnB.pressedFor(POWER_OFF_HOLD_MS)) shutdownDevice();
+
+    if (M5.BtnB.wasClicked()) uiPage = (uiPage + 1) % 2;
 
     if (millis() - lastBat > 2000) {
       lastBat = millis();
@@ -664,6 +719,8 @@ void setup() {
   deckId = TX_DECK_ID;
   Serial.printf("DECK_FORCADO=%u\n", (unsigned)deckId);
 #endif
+  loadTxPowerNvs();
+  Serial.printf("TX_POWER_ATIVO=%u (%.2f dBm)\n", (unsigned)txPowerQdbm, txPowerQdbm / 4.0f);
 #if FORCE_RPM_MULTIPLIER
   rpmMultiplier = FIXED_RPM_MULTIPLIER;
   Serial.printf("RPM_MULTIPLIER_FIXO=%.4f\n", rpmMultiplier);
@@ -682,7 +739,6 @@ void loop() {
   uint32_t nowMs = millis();
 
   if (uiReqCycleDeck) { uiReqCycleDeck = false; cycleDeck(); }
-  if (uiReqRecal) { uiReqRecal = false; recalibrate(); }
 
   serviceCommands();
   flushNvs();
