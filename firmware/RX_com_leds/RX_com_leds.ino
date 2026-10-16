@@ -88,13 +88,6 @@
 #define START_FADE_MS_DEFAULT 200
 uint16_t gStartFadeMs = START_FADE_MS_DEFAULT;
 
-// Waveform para o dashboard (modo 8): o audioTask captura WAVE_POINTS amostras
-// por janela e o loop() emite 1 linha WAVE por tick (sem bloquear o audio).
-#define WAVE_POINTS 64
-#define WAVE_INTERVAL_MS 1000
-int16_t waveSnapshot[2][WAVE_POINTS];
-volatile bool waveReady[2] = {false, false};
-
 // Tom de teste de DAC (comando serial TEST_A / TEST_B pelo dashboard).
 #define TEST_TONE_FREQ_HZ 1000
 #define TEST_TONE_MS 10000
@@ -119,6 +112,68 @@ volatile bool waveReady[2] = {false, false};
 #define CV02_START_CYCLE 0UL
 #define CV02_START_PHASE ((uint64_t)CV02_START_CYCLE << 16)
 #define CV02_PACKED_BYTES ((CV02_LENGTH + 7) / 8)
+
+// --- Timecode Rekordbox ---
+// Mesmo esquema do CV02 (1 bit por ciclo de portadora de 1000 Hz, L/R em
+// quadratura), porem com modulacao de 2 niveis CONSTANTES (bit1 = 1.0,
+// bit0 = 0.75) e sequencia pseudo-aleatoria (m-sequence) de grau 20 propria.
+// Diferente do CV02, NAO usa tabela de bits em RAM: a sequencia e gerada sob
+// demanda por um LFSR (sem custo de memoria). RB_TAPS ja esta na convencao de
+// lfsrBit/lfsrForward (bits revertidos em relacao a mascara do matlab/BM).
+#define RB_RESOLUTION 1000
+#define RB_BITS 20
+#define RB_SEED 0x8D02UL
+#define RB_TAPS 0x2E89BUL
+#define RB_LEVEL0 0.75f
+#define RB_LEVEL1 1.0f
+#define RB_MASK ((uint32_t)((1UL << RB_BITS) - 1UL))
+
+// --- Timecode Traktor MK2 ---
+// Esquema DIFERENTE do Serato/Rekordbox. Reverso-engenheirado do arquivo
+// "Timecode Traktor MK2 (Playback).mp3". Estrutura:
+//   - Portadora de 3000 Hz, L/R em quadratura (L = -cos, R = +sin), amplitude fixa.
+//   - Sinal de dados PAM a 1200 simbolos/s SOMADO (offset) as duas saidas.
+//   - Sequencia = m-sequence de grau 22 (LFSR de 22 bits, taps {10,14,15,22}).
+//   - Pulso de conformacao medido (raised-cosine com cauda negativa ~1.5T).
+// Verificado: demodulacao do arquivo da grau 22 com predicao held-out 100%.
+#define TR_RESOLUTION 1200u
+#define TR_CARRIER_HZ 3000.0f
+#define TR_BITS 22
+#define TR_MASK ((uint32_t)((1UL << TR_BITS) - 1UL))
+// Estado inicial do LFSR (qualquer estado nao-nulo da m-sequence; define a
+// posicao absoluta lida pelo Traktor no inicio).
+#define TR_SEED 0x3F049CUL
+// Niveis em fracao de fundo de escala (0..1), antes de OUTPUT_GAIN.
+#define TR_CARRIER_LEVEL 0.45f
+#define TR_OFFSET_LEVEL 0.244f
+// Numero de simbolos somados para cada lado na convolucao do pulso.
+#define TR_J 3
+#define TR_WIN (2 * TR_J + 1)
+// Pulso medido (149 amostras, tau de -74 a +74, pico no indice 74 = 10000).
+#define TR_PULSE_LEN 149
+#define TR_PULSE_CENTER 74
+static const int16_t trPulse[TR_PULSE_LEN] = {
+  -215, -245, -270, -289, -302, -306, -302, -290, -270, -241, -206, -164,
+  -117, -67, -14, 38, 88, 134, 174, 207, 231, 245, 246, 236, 213, 178, 131,
+  73, 7, -67, -146, -228, -308, -385, -454, -512, -556, -582, -587, -567,
+  -521, -445, -337, -196, -21, 189, 434, 712, 1023, 1366, 1738, 2136, 2557,
+  2999, 3456, 3926, 4404, 4886, 5368, 5844, 6312, 6767, 7204, 7621, 8013,
+  8377, 8710, 9010, 9273, 9498, 9684, 9827, 9929, 9986, 10000, 9970, 9895,
+  9778, 9618, 9416, 9175, 8895, 8579, 8230, 7850, 7443, 7011, 6558, 6089,
+  5606, 5115, 4619, 4123, 3631, 3148, 2677, 2223, 1789, 1379, 996, 643, 321,
+  33, -221, -439, -622, -770, -884, -966, -1017, -1041, -1039, -1015, -973,
+  -915, -846, -769, -688, -605, -524, -448, -378, -318, -268, -230, -204,
+  -191, -190, -201, -223, -254, -292, -337, -386, -438, -490, -540, -587,
+  -629, -665, -693, -714, -727, -731, -726, -714, -695, -670, -639
+};
+
+// Modo do timecode gerado nas saidas de audio: 0 = Serato (CV02),
+// 1 = Rekordbox, 2 = Traktor MK2.
+// Persistido em NVS (key "tcMode") e alteravel pelo comando serial TIMECODE.
+#define TC_MODE_SERATO 0
+#define TC_MODE_REKORDBOX 1
+#define TC_MODE_TRAKTOR 2
+uint8_t timecodeMode = TC_MODE_SERATO;
 
 typedef struct __attribute__((packed)) {
   uint8_t msgType;
@@ -166,8 +221,13 @@ typedef struct {
   uint32_t tonePhase;
   float volume;
   uint32_t fadeStartMillis;
-  uint32_t waveNextCaptureMillis;
-  uint16_t wavePos;
+  uint32_t rbState;
+  int64_t rbCycle;
+  uint32_t trState;
+  int64_t trSymCycle;
+  int64_t trSymPhase64;
+  int64_t trCarPhase64;
+  uint8_t trWin[TR_WIN];
 } audio_deck_state;
 
 deck_state deckStates[2];
@@ -216,11 +276,11 @@ void buildSinCosTables() {
 
 audio_deck_state audioDecks[2] = {
 #if SOLO_DECK_A && SOLO_DECK_A_USA_PINOS_B
-  { 1, I2S_NUM_0, DAC_B_BCK_PIN, DAC_B_LRCK_PIN, DAC_B_DATA_PIN, "audioDeckA", 0.0f, 0.0f, CV02_START_PHASE, 0, 0, false, 0, TEST_TONE_FREQ_HZ, 0, 1.0f },
+  { 1, I2S_NUM_0, DAC_B_BCK_PIN, DAC_B_LRCK_PIN, DAC_B_DATA_PIN, "audioDeckA", 0.0f, 0.0f, CV02_START_PHASE, 0, 0, false, 0, TEST_TONE_FREQ_HZ, 0, 1.0f, 0, RB_SEED, 0, TR_SEED, 0, 0, 0 },
 #else
-  { 1, I2S_NUM_0, DAC_A_BCK_PIN, DAC_A_LRCK_PIN, DAC_A_DATA_PIN, "audioDeckA", 0.0f, 0.0f, CV02_START_PHASE, 0, 0, false, 0, TEST_TONE_FREQ_HZ, 0, 1.0f },
+  { 1, I2S_NUM_0, DAC_A_BCK_PIN, DAC_A_LRCK_PIN, DAC_A_DATA_PIN, "audioDeckA", 0.0f, 0.0f, CV02_START_PHASE, 0, 0, false, 0, TEST_TONE_FREQ_HZ, 0, 1.0f, 0, RB_SEED, 0, TR_SEED, 0, 0, 0 },
 #endif
-  { 2, I2S_NUM_1, DAC_B_BCK_PIN, DAC_B_LRCK_PIN, DAC_B_DATA_PIN, "audioDeckB", 0.0f, 0.0f, CV02_START_PHASE, 0, 0, false, 0, TEST_TONE_FREQ_HZ, 0, 1.0f }
+  { 2, I2S_NUM_1, DAC_B_BCK_PIN, DAC_B_LRCK_PIN, DAC_B_DATA_PIN, "audioDeckB", 0.0f, 0.0f, CV02_START_PHASE, 0, 0, false, 0, TEST_TONE_FREQ_HZ, 0, 1.0f, 0, RB_SEED, 0, TR_SEED, 0, 0, 0 }
 };
 
 // [Funções de suporte: lfsrBit, lfsrForward, setPackedBit, getPackedBit, buildCv02Bits mantidas aqui]
@@ -229,6 +289,42 @@ static uint32_t lfsrForward(uint32_t current) { uint8_t bit = lfsrBit(current, C
 static void setPackedBit(uint32_t index, uint8_t value) { uint32_t byteIndex = index >> 3; uint8_t bitMask = (uint8_t)(1U << (index & 7)); if (value != 0) cv02PackedBits[byteIndex] |= bitMask; else cv02PackedBits[byteIndex] &= (uint8_t)~bitMask; }
 static inline uint8_t getPackedBit(uint32_t index) { uint32_t byteIndex = index >> 3; uint8_t bitMask = (uint8_t)(1U << (index & 7)); return (cv02PackedBits[byteIndex] & bitMask) != 0; }
 void buildCv02Bits() { memset(cv02PackedBits, 0, sizeof(cv02PackedBits)); uint32_t code = CV02_SEED; for (uint32_t i = 0; i < CV02_LENGTH; i++) { setPackedBit(i, (uint8_t)(code & 0x1U)); code = lfsrForward(code); } }
+
+// LFSR do rekordbox: mesma estrutura de lfsrForward (shift right + realimenta no
+// MSB), porem com os taps do rekordbox. rbReverse devolve o estado anterior
+// (permite acompanhar a agulha girando ao contrario sem tabela em RAM).
+static uint32_t lfsrForwardT(uint32_t current, uint32_t taps) { uint8_t bit = lfsrBit(current, taps | 0x1U); return (current >> 1) | ((uint32_t)bit << (RB_BITS - 1)); }
+static uint32_t lfsrReverseT(uint32_t next, uint32_t taps) { uint32_t x = (next << 1) & RB_MASK; uint8_t b0 = lfsrBit(x, taps | 0x1U) ^ (uint8_t)((next >> (RB_BITS - 1)) & 0x1U); return x | b0; }
+
+// LFSR do Traktor MK2: 22 bits, taps {10,14,15,22}. O bit transmitido de um
+// estado S e o MSB (S>>21). trForward avanca um simbolo; trReverse devolve o
+// estado anterior (permite acompanhar a agulha girando ao contrario).
+static inline uint32_t trForward(uint32_t s) {
+  uint32_t fb = ((s >> 9) ^ (s >> 13) ^ (s >> 14) ^ (s >> 21)) & 0x1U;
+  return ((s << 1) | fb) & TR_MASK;
+}
+static inline uint32_t trReverse(uint32_t s) {
+  uint32_t msb = (s ^ (s >> 10) ^ (s >> 14) ^ (s >> 15)) & 0x1U;
+  return (s >> 1) | (msb << (TR_BITS - 1));
+}
+
+// Preenche a janela deslizante com os simbolos trSymCycle-3 .. trSymCycle+3
+// (trWin[TR_J] = simbolo corrente). Sem tabela em RAM.
+static void trBuildWindow(audio_deck_state *deck) {
+  uint32_t t = deck->trState;
+  deck->trWin[TR_J] = (uint8_t)((t >> (TR_BITS - 1)) & 0x1U);
+  for (int i = TR_J - 1; i >= 0; i--) { t = trReverse(t); deck->trWin[i] = (uint8_t)((t >> (TR_BITS - 1)) & 0x1U); }
+  t = deck->trState;
+  for (int i = TR_J + 1; i < TR_WIN; i++) { t = trForward(t); deck->trWin[i] = (uint8_t)((t >> (TR_BITS - 1)) & 0x1U); }
+}
+
+static void trInitDeck(audio_deck_state *deck) {
+  deck->trState = TR_SEED;
+  deck->trSymCycle = 0;
+  deck->trSymPhase64 = 0;
+  deck->trCarPhase64 = 0;
+  trBuildWindow(deck);
+}
 
 bool ensurePeer(const uint8_t *mac) { if (esp_now_is_peer_exist(mac)) return true; esp_now_peer_info_t peerInfo = {}; memcpy(peerInfo.peer_addr, mac, 6); peerInfo.channel = activeEspNowChannel; peerInfo.encrypt = false; return esp_now_add_peer(&peerInfo) == ESP_OK; }
 void sendControlMessage(const uint8_t *mac, uint8_t deckId, uint8_t msgType) { if (!ensurePeer(mac)) return; dvs_packet response = {}; response.msgType = msgType; response.version = PROTOCOL_VERSION; response.deckId = deckId; response.gyroRaw = (int16_t)RX_BOOT_ID; response.timestampMicros = micros(); esp_now_send(mac, (uint8_t *)&response, sizeof(response)); }
@@ -359,6 +455,22 @@ void saveStartFadeNvs(uint16_t ms) {
   Preferences prefs;
   prefs.begin("dvs", false);
   prefs.putInt("fadeMs", (int)ms);
+  prefs.end();
+}
+
+// Modo do timecode (Serato/Rekordbox) persistido em NVS: sobrevive a reboots.
+uint8_t loadTimecodeModeNvs() {
+  Preferences prefs;
+  prefs.begin("dvs", true);
+  int saved = prefs.getInt("tcMode", -1);
+  prefs.end();
+  if (saved == TC_MODE_SERATO || saved == TC_MODE_REKORDBOX || saved == TC_MODE_TRAKTOR) return (uint8_t)saved;
+  return TC_MODE_SERATO;
+}
+void saveTimecodeModeNvs(uint8_t m) {
+  Preferences prefs;
+  prefs.begin("dvs", false);
+  prefs.putInt("tcMode", (int)m);
   prefs.end();
 }
 
@@ -510,6 +622,40 @@ void selectCleanChannel(bool force = false) {
   Serial.printf("RF_CHANNEL,%d\n", activeEspNowChannel);
 }
 
+// Diagnostico de canal (comando SCAN_REPORT): varre as redes 2.4GHz visiveis e
+// conta quantas ocupam o MESMO canal em que o ESP-NOW opera. NAO troca o canal,
+// nao grava no NVS e nao mexe nos peers — e somente leitura. O radio sai do
+// canal durante a varredura (80ms por canal) e depois volta.
+void scanDiagnostic() {
+#if USE_LONG_RANGE
+  Serial.println("SCAN_ERR: varredura indisponivel em Long Range");
+  return;
+#else
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);
+  uint8_t active = activeEspNowChannel;
+  int found = WiFi.scanNetworks(false, false, false, 80);
+  if (found < 0) {
+    Serial.println("SCAN_ERR: falha na varredura");
+    return;
+  }
+  int same = 0;
+  for (int i = 0; i < found; i++) {
+    int ch = WiFi.channel(i);
+    if (ch != (int)active) continue;
+    same++;
+    String ssid = WiFi.SSID(i);
+    ssid.replace('|', '_');
+    ssid.replace('\n', ' ');
+    ssid.replace('\r', ' ');
+    Serial.printf("SCAN_NET|%d|%d|%d|%s\n", ch, WiFi.RSSI(i), WiFi.encryptionType(i), ssid.c_str());
+  }
+  Serial.printf("SCAN_REPORT,active=%u,same=%d,total=%d\n", (unsigned)active, same, found);
+  WiFi.scanDelete();
+  applyChannelToRadio();
+#endif
+}
+
 void setupEspNow() { esp_wifi_set_max_tx_power(52);
 #if USE_LONG_RANGE
   esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_LR);
@@ -531,6 +677,73 @@ static inline void renderCv02Sample(audio_deck_state *deck, float rpm, int16_t *
   int16_t sine = sinTable[tableIndex]; int16_t cosine = cosTable[tableIndex];
   uint8_t bit = getPackedBit(cycleIndex); float modulation = bit ? 1.0f : 1.0f - ((-(float)cosine / 32767.0f + 1.0f) * 0.25f);
   *leftOut = (int16_t)((-(float)cosine / 32767.0f) * modulation * OUTPUT_GAIN * 32767.0f); *rightOut = (int16_t)(((float)sine / 32767.0f) * modulation * OUTPUT_GAIN * 32767.0f);
+}
+
+// Timecode Rekordbox: mesma quadratura do CV02 (L = -cos*mod, R = +sin*mod),
+// com mod de 2 niveis constantes e bit vindo do LFSR gerado sob demanda.
+static inline void renderRekordboxSample(audio_deck_state *deck, float rpm, int16_t *leftOut, int16_t *rightOut) {
+  float ratio = rpm / BASE_RPM; if(fabsf(ratio) < DEADZONE_RPM) ratio = 0.0f; if(ratio > MAX_RPM_RATIO) ratio = MAX_RPM_RATIO; if(ratio < -MAX_RPM_RATIO) ratio = -MAX_RPM_RATIO;
+  int32_t phaseStep = (int32_t)(ratio * ((float)RB_RESOLUTION * 65536.0f / SAMPLE_RATE));
+  deck->cv02Phase64 += (int64_t)phaseStep; int64_t cycle = (int64_t)deck->cv02Phase64 >> 16;
+  // Acompanha o ciclo avancando/retrocedendo o LFSR (delta e no maximo ~1 por amostra).
+  int64_t delta = cycle - deck->rbCycle;
+  if (delta > 0) { int64_t k = (delta > 64) ? 64 : delta; while (k--) deck->rbState = lfsrForwardT(deck->rbState, RB_TAPS); deck->rbCycle = cycle; }
+  else if (delta < 0) { int64_t k = (delta < -64) ? -64 : delta; while (k++) deck->rbState = lfsrReverseT(deck->rbState, RB_TAPS); deck->rbCycle = cycle; }
+  uint8_t bit = (uint8_t)(deck->rbState & 0x1U);
+  uint16_t tableIndex = (deck->cv02Phase64 >> 6) & (SIN_COS_TABLE_SIZE - 1);
+  int16_t sine = sinTable[tableIndex]; int16_t cosine = cosTable[tableIndex];
+  float modulation = bit ? RB_LEVEL1 : RB_LEVEL0;
+  *leftOut = (int16_t)((-(float)cosine / 32767.0f) * modulation * OUTPUT_GAIN * 32767.0f); *rightOut = (int16_t)(((float)sine / 32767.0f) * modulation * OUTPUT_GAIN * 32767.0f);
+}
+
+// Timecode Traktor MK2: portadora 3000 Hz em quadratura (L = -cos, R = +sin)
+// SOMADA (offset) a um sinal PAM de 1200 simbolos/s (m-sequence de grau 22) com
+// o pulso medido. O mesmo offset s(t) entra nas duas saidas.
+static inline void renderTraktorSample(audio_deck_state *deck, float rpm, int16_t *leftOut, int16_t *rightOut) {
+  float ratio = rpm / BASE_RPM; if(fabsf(ratio) < DEADZONE_RPM) ratio = 0.0f; if(ratio > MAX_RPM_RATIO) ratio = MAX_RPM_RATIO; if(ratio < -MAX_RPM_RATIO) ratio = -MAX_RPM_RATIO;
+  // Relogio de simbolo (1200 Hz): avanca/retrocede o LFSR e a janela.
+  int32_t symStep = (int32_t)(ratio * ((float)TR_RESOLUTION * 65536.0f / SAMPLE_RATE));
+  deck->trSymPhase64 += (int64_t)symStep;
+  int64_t cyc = deck->trSymPhase64 >> 16;
+  int64_t delta = cyc - deck->trSymCycle;
+  if (delta != 0) {
+    int64_t k = delta > 8 ? 8 : (delta < -8 ? -8 : delta);
+    if (k > 0) { while (k--) deck->trState = trForward(deck->trState); }
+    else { while (k++) deck->trState = trReverse(deck->trState); }
+    deck->trSymCycle = cyc;
+    trBuildWindow(deck);
+  }
+  // Offset PAM: convolucao da janela de simbolos com o pulso medido.
+  uint32_t frac16 = (uint32_t)(deck->trSymPhase64 & 0xFFFF);
+  float f = (float)frac16 * (1.0f / 65536.0f);
+  float stepSamples = (float)SAMPLE_RATE / (float)TR_RESOLUTION;
+  float s = 0.0f;
+  for (int m = -TR_J; m <= TR_J; m++) {
+    float x = (f - (float)m) * stepSamples + (float)TR_PULSE_CENTER;
+    int i0 = (int)floorf(x);
+    if (i0 < 0) i0 = 0;
+    if (i0 > TR_PULSE_LEN - 2) i0 = TR_PULSE_LEN - 2;
+    float fr = x - (float)i0;
+    float pv = (float)trPulse[i0] + fr * ((float)trPulse[i0 + 1] - (float)trPulse[i0]);
+    if (deck->trWin[TR_J + m] == 0) pv = -pv;
+    s += pv;
+  }
+  s *= (TR_OFFSET_LEVEL / 10000.0f);
+  // Portadora de 3000 Hz (L = -cos, R = +sin).
+  int32_t carStep = (int32_t)(ratio * ((float)TR_CARRIER_HZ * 65536.0f / SAMPLE_RATE));
+  deck->trCarPhase64 += (int64_t)carStep;
+  uint16_t tableIndex = (deck->trCarPhase64 >> 6) & (SIN_COS_TABLE_SIZE - 1);
+  float sine = (float)sinTable[tableIndex] / 32767.0f;
+  float cosine = (float)cosTable[tableIndex] / 32767.0f;
+  *leftOut = (int16_t)((-cosine * TR_CARRIER_LEVEL + s) * OUTPUT_GAIN * 32767.0f);
+  *rightOut = (int16_t)((sine * TR_CARRIER_LEVEL + s) * OUTPUT_GAIN * 32767.0f);
+}
+
+// Despacha para o renderer do modo ativo (Serato/CV02, Rekordbox ou Traktor).
+static inline void renderTimecodeSample(audio_deck_state *deck, float rpm, int16_t *leftOut, int16_t *rightOut) {
+  if (timecodeMode == TC_MODE_REKORDBOX) renderRekordboxSample(deck, rpm, leftOut, rightOut);
+  else if (timecodeMode == TC_MODE_TRAKTOR) renderTraktorSample(deck, rpm, leftOut, rightOut);
+  else renderCv02Sample(deck, rpm, leftOut, rightOut);
 }
 
 float readTargetRpm(uint8_t deckId) { uint8_t deckIndex = deckId <= 1 ? 0 : 1; int16_t rpmCenti = 0; uint32_t lastSeenMillis = 0; portENTER_CRITICAL(&stateMux); rpmCenti = deckStates[deckIndex].rpmCenti; lastSeenMillis = deckStates[deckIndex].lastSeenMillis; portEXIT_CRITICAL(&stateMux); if (lastSeenMillis == 0 || millis() - lastSeenMillis > DECK_TIMEOUT_MS) return 0.0f; return (float)rpmCenti / 100.0f; }
@@ -557,15 +770,7 @@ void audioTask(void *param) { audio_deck_state *deck = (audio_deck_state *)param
       float alpha = (fabsf(delta) > 2.5f) ? 0.8f : RPM_SMOOTHING;
       deck->filteredRpm += delta * alpha;
     }
-    for (int i = 0; i < DMA_BUF_LEN; i++) { int16_t left, right; if (millis() < deck->testToneUntil) { deck->tonePhase += (uint32_t)((float)deck->testToneFreqHz * 65536.0f / SAMPLE_RATE); int16_t tone = (int16_t)((float)sinTable[(deck->tonePhase >> 6) & (SIN_COS_TABLE_SIZE - 1)] * TEST_TONE_AMPLITUDE); left = tone; right = tone; } else if (stopped) { left = 0; right = 0; } else { renderCv02Sample(deck, deck->filteredRpm, &left, &right); } buffer[i * 2] = left; buffer[i * 2 + 1] = right; }
-    // Waveform (modo 8): captura 1 amostra por ~15.6ms ate completar WAVE_POINTS
-    // (~1s). O loop() emite em baixa prioridade, sem bloquear o audio.
-    if (!stopped && deck->wavePos < WAVE_POINTS && millis() >= deck->waveNextCaptureMillis) {
-      waveSnapshot[deckIdx][deck->wavePos] = buffer[(DMA_BUF_LEN - 1) * 2];
-      deck->wavePos++;
-      deck->waveNextCaptureMillis += WAVE_INTERVAL_MS / WAVE_POINTS;
-      if (deck->wavePos >= WAVE_POINTS) { waveReady[deckIdx] = true; deck->wavePos = 0; }
-    }
+    for (int i = 0; i < DMA_BUF_LEN; i++) { int16_t left, right; if (millis() < deck->testToneUntil) { deck->tonePhase += (uint32_t)((float)deck->testToneFreqHz * 65536.0f / SAMPLE_RATE); int16_t tone = (int16_t)((float)sinTable[(deck->tonePhase >> 6) & (SIN_COS_TABLE_SIZE - 1)] * TEST_TONE_AMPLITUDE); left = tone; right = tone; } else if (stopped) { left = 0; right = 0; } else { renderTimecodeSample(deck, deck->filteredRpm, &left, &right); } buffer[i * 2] = left; buffer[i * 2 + 1] = right; }
     // Volume do deck + fade de inicio (envelope 0->1 em START_FADE_MS).
     float fadeGain = 1.0f;
     if (deck->fadeStartMillis && gStartFadeMs > 0) {
@@ -685,7 +890,9 @@ void handleSerialCommand() {
             Serial.println("CHANNEL_ERR: use 1-13");
           }
         }
-      } else if (cmdLine.startsWith("SCAN")) {
+      } else if (cmdLine.equals("SCAN_REPORT")) {
+        scanDiagnostic();
+      } else if (cmdLine.equals("SCAN")) {
         selectCleanChannel(true);
         applyChannelToRadio();
       } else if (cmdLine.startsWith("DECK_ID")) {
@@ -844,6 +1051,31 @@ if (valid) Serial.printf("VOLUME_OK,%.3f,%.3f\n", audioDecks[0].volume, audioDec
             Serial.println("FADE_ERR: use 0-1000 (ms)");
           }
         }
+      } else if (cmdLine.startsWith("TIMECODE")) {
+        String arg = cmdLine.substring(8);
+        arg.trim();
+        if (arg.length() == 0) {
+          Serial.printf("TIMECODE_OK,%u\n", (unsigned)timecodeMode);
+        } else {
+          int m = -1;
+          if (arg.equalsIgnoreCase("serato") || arg.equalsIgnoreCase("cv02") || arg == "0") m = TC_MODE_SERATO;
+          else if (arg.equalsIgnoreCase("rekordbox") || arg.equalsIgnoreCase("rb") || arg == "1") m = TC_MODE_REKORDBOX;
+          else if (arg.equalsIgnoreCase("traktor") || arg.equalsIgnoreCase("mk2") || arg == "2") m = TC_MODE_TRAKTOR;
+          if (m < 0) {
+            Serial.println("TIMECODE_ERR: use TIMECODE serato|rekordbox|traktor");
+          } else {
+            timecodeMode = (uint8_t)m;
+            saveTimecodeModeNvs(timecodeMode);
+            // Ressincroniza os LFSRs (rekordbox e traktor) com o ciclo atual de
+            // cada deck, evitando um salto gigante ao trocar de modo girando.
+            for (uint8_t d = 0; d < 2; d++) {
+              audioDecks[d].rbState = RB_SEED;
+              audioDecks[d].rbCycle = (int64_t)(audioDecks[d].cv02Phase64 >> 16);
+              trInitDeck(&audioDecks[d]);
+            }
+            Serial.printf("TIMECODE_OK,%u\n", (unsigned)timecodeMode);
+          }
+        }
       }
       cmdLine = "";
     } else if (c != '\r') {
@@ -950,6 +1182,7 @@ void setup() {
   audioDecks[0].volume = loadDeckVolumeNvs(0);
   audioDecks[1].volume = loadDeckVolumeNvs(1);
   gStartFadeMs = loadStartFadeNvs();
+  timecodeMode = loadTimecodeModeNvs();
   loadTxPowerNvs();
   loadFilterCacheNvs();
   ledPwmOk[0] = ledcAttach(LED_DECK_A, 5000, 8);
@@ -960,8 +1193,12 @@ void setup() {
   Serial.begin(DEBUG_BAUD);
   Serial.println("DVS_RX_READY,v2");
   Serial.printf("LED_PWM_A=%d LED_PWM_B=%d\n", ledPwmOk[0], ledPwmOk[1]);
+  Serial.printf("TIMECODE_OK,%u\n", (unsigned)timecodeMode);
   buildSinCosTables();
   buildCv02Bits();
+  // Inicializa o LFSR/janela do Traktor (trState=TR_SEED, fase 0, janela pronta).
+  trInitDeck(&audioDecks[0]);
+  trInitDeck(&audioDecks[1]);
   setupI2S(&audioDecks[0], false);
 #if !SOLO_DECK_A
   setupI2S(&audioDecks[1], false);
@@ -994,17 +1231,6 @@ void loop() {
   handleSerialCommand();
   serviceEspNowControl();
   sendTelemetry();
-
-  // Waveform (modo 8): emite WAVE,<deck>,v0..v63 quando um snapshot ficou pronto.
-  // Em baixa prioridade no loop() para nunca atrasar os tasks de audio.
-  for (uint8_t d = 0; d < 2; d++) {
-    if (waveReady[d]) {
-      portENTER_CRITICAL(&stateMux); waveReady[d] = false; portEXIT_CRITICAL(&stateMux);
-      Serial.printf("WAVE,%u", d + 1);
-      for (uint16_t w = 0; w < WAVE_POINTS; w++) Serial.printf(",%d", (int)waveSnapshot[d][w]);
-      Serial.println();
-    }
-  }
 
   // Controle dos LEDs Azul (solido = ok, piscando = sinal fraco/perda, apagado = sem deck)
   updateDeckLed(0, LED_DECK_A);

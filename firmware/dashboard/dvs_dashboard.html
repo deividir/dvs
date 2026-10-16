@@ -134,6 +134,15 @@
   .calib-hint { color: #6e7681; font-size: 12px; line-height: 1.35; margin: 0 0 8px; }
   .calib-val { font-weight: 600; font-variant-numeric: tabular-nums; }
   .live-rpm { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .live-wrap { display: inline-flex; align-items: center; gap: 8px; }
+  .stab { font-size: 12px; font-weight: 600; white-space: nowrap; }
+  .stab.ok { color: #3fb950; }
+  .stab.wait { color: #d29922; }
+  .stab.bad { color: #f85149; }
+  .stab.off { color: #6e7681; }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn:disabled:hover { background: #238636; }
+  .btn.danger:disabled:hover { background: #da3633; }
   input[type=number] { background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 5px 8px; font-size: 13px; font-variant-numeric: tabular-nums; width: 90px; }
   textarea.calib-snippet { width: 100%; background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 8px; font-family: Consolas, monospace; font-size: 11px; margin-top: 8px; resize: vertical; min-height: 48px; }
 
@@ -145,6 +154,19 @@
 
   /* Badges de valor (usado em Geral) */
   .channel-badge { background: #1f6feb; color: #fff; padding: 4px 12px; border-radius: 20px; font-size: 14px; font-weight: 600; }
+
+  /* Sinal e sessão */
+  .sig-toolbar select { background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 5px 8px; font-size: 13px; }
+  .sig-toolbar .spacer { flex: 1; }
+  .sig-legend { display: inline-flex; gap: 14px; margin-left: auto; font-size: 12px; color: #8b949e; font-weight: 400; }
+  .sig-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
+  .sig-chart { width: 100%; height: 240px; display: block; cursor: crosshair; }
+  .sig-hint { color: #6e7681; font-size: 12px; margin-top: 6px; }
+  .sig-meta { color: #8b949e; font-size: 12px; margin-bottom: 8px; }
+  table.sig-table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+  .sig-table th, .sig-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #21262d; }
+  .sig-table th { color: #8b949e; font-weight: 600; font-size: 12px; }
+  .sig-table td.k { color: #8b949e; }
 </style>
 </head>
 <body>
@@ -160,9 +182,6 @@
 
   <!-- ==================== DASHBOARD ==================== -->
   <section id="view-dashboard" class="view">
-    <div class="toolbar">
-      <button id="btnUptime" class="btn small">Tempo conectado</button>
-    </div>
     <div class="deck-home">
       <div class="card">
         <h2><span class="dot gray" id="dotA"></span> Deck <span class="deck">A</span></h2>
@@ -211,23 +230,66 @@
     </div>
   </section>
 
+  <!-- ==================== SINAL E SESSÃO ==================== -->
+  <section id="view-sinal" class="view">
+    <div class="toolbar sig-toolbar">
+      <span class="label">Janela:</span>
+      <select id="sigWindow">
+        <option value="1">1 min</option>
+        <option value="3">3 min</option>
+        <option value="5" selected>5 min</option>
+        <option value="15">15 min</option>
+        <option value="30">30 min</option>
+        <option value="60">60 min</option>
+      </select>
+      <span class="spacer"></span>
+      <span class="label">CSV:</span>
+      <select id="csvFormat" title="Excel em português usa ponto e vírgula e vírgula decimal">
+        <option value="br">Excel pt-BR (; e vírgula decimal)</option>
+        <option value="us">Padrão (, e ponto decimal)</option>
+      </select>
+      <button id="btnCsv" class="btn small">Exportar CSV</button>
+      <button id="btnCopySummary" class="btn small">Copiar resumo</button>
+      <button id="btnSigClear" class="btn small danger">Nova sessão</button>
+    </div>
+
+    <div class="card">
+      <h2>Sinal (RSSI) <span class="sig-legend"><span><i style="background:#58a6ff"></i>Deck A</span><span><i style="background:#f0883e"></i>Deck B</span></span></h2>
+      <canvas id="chRssi" class="sig-chart"></canvas>
+      <div class="sig-hint">Linha tracejada: limite do alerta (-75 dBm). Faixas coloridas no rodapé: deck desconectado. Passe o mouse para ver os valores.</div>
+    </div>
+
+    <div class="card">
+      <h2>Perda de pacotes <span style="color:#8b949e;font-weight:400;font-size:13px;">(por janela de 0,5 s)</span> <span class="sig-legend"><span><i style="background:#58a6ff"></i>Deck A</span><span><i style="background:#f0883e"></i>Deck B</span></span></h2>
+      <canvas id="chLoss" class="sig-chart"></canvas>
+      <div class="sig-hint">Linha tracejada: 10% (a partir daí o dashboard marca como alto).</div>
+    </div>
+
+    <div class="card">
+      <h2>Resumo da sessão</h2>
+      <div class="sig-meta" id="sigMeta">Sem dados. Conecte ao receptor para começar a gravar.</div>
+      <table class="sig-table" id="sigSummary"></table>
+    </div>
+  </section>
+
   <!-- ==================== CALIBRAÇÃO ==================== -->
   <section id="view-calib" class="view">
     <div class="inner">
       <div class="card">
         <h2>Calibração de velocidade <span style="color:#8b949e;font-weight:400;font-size:13px;">(vinil 33 1/3 → 33.333 rpm)</span></h2>
         <div class="info-msg" style="margin-bottom:12px;">
-          Coloque o tocadisco do deck no pitch indicado (0%, +8% ou -8%), espere ~3s girando e clique no botão correspondente.
+          Coloque o tocadisco do deck no pitch indicado (0%, +8% ou -8%) e aguarde o indicador ao lado do RPM ficar verde "estável"
+          (~4s girando; os botões de captura só habilitam com o prato estável e a telemetria recente).
           Depois clique em "Calcular". Use "Enviar via ESP-NOW" para gravar o novo multiplicador no TX sem cabo, ou copie o snippet.
         </div>
         <div class="grid" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
           <div class="calib-block">
             <h3>Deck A <span class="aside">(TX_DECK_ID 1)</span></h3>
-            <div class="calib-line"><span class="label">RPM ao vivo</span><span class="live-rpm" id="liveRpm0">--</span></div>
+            <div class="calib-line"><span class="label">RPM ao vivo</span><span class="live-wrap"><span class="live-rpm" id="liveRpm0">--</span><span class="stab off" id="calStab0">sem sinal</span></span></div>
             <div class="calib-line"><span class="label">Multiplicador atual no TX</span><input id="calK0" type="number" step="0.0001" value="0.9974"></div>
-            <div class="calib-line"><button class="btn small" onclick="captureCalib(0,0)">0%</button><span class="calib-val" id="calR0_0">--</span></div>
-            <div class="calib-line"><button class="btn small" onclick="captureCalib(0,1)">+8%</button><span class="calib-val" id="calR0_1">--</span></div>
-            <div class="calib-line"><button class="btn small" onclick="captureCalib(0,2)">-8%</button><span class="calib-val" id="calR0_2">--</span></div>
+            <div class="calib-line"><button class="btn small" id="capBtn0_0" onclick="captureCalib(0,0)" disabled>0%</button><span class="calib-val" id="calR0_0">--</span></div>
+            <div class="calib-line"><button class="btn small" id="capBtn0_1" onclick="captureCalib(0,1)" disabled>+8%</button><span class="calib-val" id="calR0_1">--</span></div>
+            <div class="calib-line"><button class="btn small" id="capBtn0_2" onclick="captureCalib(0,2)" disabled>-8%</button><span class="calib-val" id="calR0_2">--</span></div>
             <div class="calib-line"><button class="btn small" onclick="calcCalib(0)">Calcular</button></div>
             <div class="calib-line"><span class="label">Novo multiplicador</span><span class="calib-val good" id="calNew0">--</span></div>
             <div class="calib-line"><span class="label">R+8/R0</span><span class="calib-val" id="calVp8_0">--</span></div>
@@ -237,11 +299,11 @@
           </div>
           <div class="calib-block">
             <h3>Deck B <span class="aside">(TX_DECK_ID 2)</span></h3>
-            <div class="calib-line"><span class="label">RPM ao vivo</span><span class="live-rpm" id="liveRpm1">--</span></div>
+            <div class="calib-line"><span class="label">RPM ao vivo</span><span class="live-wrap"><span class="live-rpm" id="liveRpm1">--</span><span class="stab off" id="calStab1">sem sinal</span></span></div>
             <div class="calib-line"><span class="label">Multiplicador atual no TX</span><input id="calK1" type="number" step="0.0001" value="0.9974"></div>
-            <div class="calib-line"><button class="btn small" onclick="captureCalib(1,0)">0%</button><span class="calib-val" id="calR1_0">--</span></div>
-            <div class="calib-line"><button class="btn small" onclick="captureCalib(1,1)">+8%</button><span class="calib-val" id="calR1_1">--</span></div>
-            <div class="calib-line"><button class="btn small" onclick="captureCalib(1,2)">-8%</button><span class="calib-val" id="calR1_2">--</span></div>
+            <div class="calib-line"><button class="btn small" id="capBtn1_0" onclick="captureCalib(1,0)" disabled>0%</button><span class="calib-val" id="calR1_0">--</span></div>
+            <div class="calib-line"><button class="btn small" id="capBtn1_1" onclick="captureCalib(1,1)" disabled>+8%</button><span class="calib-val" id="calR1_1">--</span></div>
+            <div class="calib-line"><button class="btn small" id="capBtn1_2" onclick="captureCalib(1,2)" disabled>-8%</button><span class="calib-val" id="calR1_2">--</span></div>
             <div class="calib-line"><button class="btn small" onclick="calcCalib(1)">Calcular</button></div>
             <div class="calib-line"><span class="label">Novo multiplicador</span><span class="calib-val good" id="calNew1">--</span></div>
             <div class="calib-line"><span class="label">R+8/R0</span><span class="calib-val" id="calVp8_1">--</span></div>
@@ -338,6 +400,21 @@
       </div>
 
       <div class="card">
+        <h2>Sinal de Timecode</h2>
+        <div class="toolbar" style="margin-bottom:8px;">
+          <span class="label" style="width:120px;">Formato:</span>
+          <select id="tcModeSelect" style="min-width:200px;">
+            <option value="0">Serato (CV02)</option>
+            <option value="1">Rekordbox</option>
+            <option value="2">Traktor MK2</option>
+          </select>
+          <button id="btnApplyTc" class="btn small">Aplicar</button>
+          <span id="tcModeStatus" class="label" style="margin-left:12px;">—</span>
+        </div>
+        <div class="info-msg">Define qual timecode o RX gera nas saídas de áudio (DAC A/B). A escolha é salva no RX e persiste após reiniciar.</div>
+      </div>
+
+      <div class="card">
         <h2>Configuração TX <span style="color:#8b949e;font-weight:400;font-size:13px;">(via ESP-NOW, sem abrir caixas)</span></h2>
         <div class="toolbar" style="margin-bottom:8px;">
           <span class="label" style="width:120px;">Caixa do slot 1:</span>
@@ -378,6 +455,16 @@
         </div>
         <div class="info-msg">Os valores entre parênteses são unidades de 0,25 dBm. Nesta etapa, o dashboard já envia os comandos; o RX e os TXs precisam receber a atualização de firmware correspondente.</div>
       </div>
+
+      <div class="card">
+        <h2>Diagnóstico de canal <span style="color:#8b949e;font-weight:400;font-size:13px;">(somente leitura)</span></h2>
+        <div class="toolbar" style="margin-bottom:12px;">
+          <button id="btnScan" class="btn small">Escanear redes 2.4GHz</button>
+          <span id="scanStatus" class="label" style="margin-left:12px;">—</span>
+        </div>
+        <div id="scanResult" class="info-msg" style="margin-bottom:8px;">Varre as redes visíveis e mostra quantas ocupam o mesmo canal do RX. Não altera o canal em uso.</div>
+        <div id="scanList" style="font-family:monospace;font-size:12px;color:#8b949e;white-space:pre-wrap;line-height:1.5;"></div>
+      </div>
     </div>
   </section>
 
@@ -388,11 +475,6 @@
       <span class="log-actions">
         <input type="checkbox" id="chAutoScroll" checked style="accent-color:#58a6ff;width:14px;height:14px;cursor:pointer;">
         <label for="chAutoScroll" style="cursor:pointer;">autoscroll</label>
-        <input type="checkbox" id="chRecordLog" checked style="accent-color:#58a6ff;width:14px;height:14px;cursor:pointer;">
-        <label for="chRecordLog" style="cursor:pointer;">gravar sessão</label>
-        <button id="btnExportLog" class="btn small">Exportar .txt</button>
-        <button id="btnClearLog" class="btn small danger">Limpar</button>
-        <span id="logStatus" style="color:#8b949e;font-size:11px;"></span>
       </span>
     </div>
     <div class="log" id="log"></div>
@@ -409,7 +491,7 @@ let lastUpdate = 0;
 
 const $ = (id) => document.getElementById(id);
 
-const pageNames = { dashboard: 'RECEIVER MONITOR', calib: 'CALIBRAÇÃO', audio: 'TESTES DE ÁUDIO', geral: 'GERAL' };
+const pageNames = { dashboard: 'RECEIVER MONITOR', sinal: 'SINAL E SESSÃO', calib: 'CALIBRAÇÃO', audio: 'TESTES DE ÁUDIO', geral: 'GERAL' };
 
 function showSection(page) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
@@ -417,7 +499,8 @@ function showSection(page) {
   if (el) el.classList.add('active');
   $('pageTitle').textContent = pageNames[page] || 'RECEIVER MONITOR';
   const logWrap = document.querySelector('.log-wrap');
-  if (logWrap) logWrap.style.display = (page === 'geral' || page === 'audio') ? 'none' : '';
+  if (logWrap) logWrap.style.display = (page === 'geral' || page === 'audio' || page === 'sinal') ? 'none' : '';
+  if (page === 'sinal' && window.Sig) window.Sig.onShow();
 }
 window.onSectionChange = showSection;
 
@@ -428,6 +511,7 @@ showSection(initialPage in pageNames ? initialPage : 'dashboard');
 const deckRpm = [0, 0];
 const deckAngle = [0, 0];
 const rpmHistory = [[], []];
+const rpmTime = [0, 0];
 const calibRpm = [[null, null, null], [null, null, null]];
 const discCanvases = [$('discA'), $('discB')];
 let lastAnimTime = 0;
@@ -437,7 +521,7 @@ const warnState = [
   { rssi: false, loss: false }
 ];
 const RSSI_WARN_THRESHOLD = -75;
-const LOSS_WARN_THRESHOLD = 50;
+const LOSS_WARN_PCT = 10;  // perda na janela de 0,5 s (%) a partir da qual o aviso dispara
 
 const logEl = $('log');
 
@@ -457,7 +541,7 @@ function logLine(text, cls) {
 // (warnings, confirmações), com timestamp, para exportar em .txt após a sessão.
 const sessionLog = [];
 const SESSION_LOG_MAX = 50000;
-let sessionRecording = true;
+let sessionRecording = false;
 
 function nowStamp() {
   const d = new Date();
@@ -470,8 +554,7 @@ function recordSession(text) {
   if (!sessionRecording) return;
   sessionLog.push('[' + nowStamp() + '] ' + text);
   if (sessionLog.length > SESSION_LOG_MAX) sessionLog.shift();
-  const st = $('logStatus');
-  if (st) st.textContent = sessionLog.length + ' linhas';
+  // Contador de linhas removido da interface
 }
 
 function exportSessionLog() {
@@ -525,9 +608,18 @@ function updateDeck(idx, fields, tcSecs, pktAgeMs, wrPerHalfSec, toneOn, i2sErr,
   const batt = parseInt(fields[2], 10);
   const rpm = parseInt(fields[3], 10) / 100;
   const lost = parseInt(fields[4], 10);
+
+  if (connected) {
+    if (connStart[idx] === null) connStart[idx] = Date.now();
+    startUptimeTicker();
+  } else {
+    connStart[idx] = null;
+  }
+
   deckRpm[idx] = (connected && Math.abs(rpm) >= 0.5) ? rpm : 0;
   if (connected && Math.abs(rpm) >= 0.5) {
     rpmHistory[idx].push(rpm);
+    rpmTime[idx] = Date.now();
     if (rpmHistory[idx].length > 8) rpmHistory[idx].shift();
   } else {
     rpmHistory[idx] = [];
@@ -564,7 +656,6 @@ function updateDeck(idx, fields, tcSecs, pktAgeMs, wrPerHalfSec, toneOn, i2sErr,
 
   if (connected) {
     const rssiWarn = rssi < RSSI_WARN_THRESHOLD;
-    const lossWarn = lost > LOSS_WARN_THRESHOLD;
     const deckLabel = idx === 0 ? 'Deck A' : 'Deck B';
 
     if (rssiWarn && !warnState[idx].rssi) {
@@ -573,12 +664,8 @@ function updateDeck(idx, fields, tcSecs, pktAgeMs, wrPerHalfSec, toneOn, i2sErr,
     } else if (!rssiWarn && warnState[idx].rssi) {
       warnState[idx].rssi = false;
     }
-    if (lossWarn && !warnState[idx].loss) {
-      logLine(deckLabel + ': LED warning — perda de pacotes alta (' + lost + ' > ' + LOSS_WARN_THRESHOLD + ')', 'warn');
-      warnState[idx].loss = true;
-    } else if (!lossWarn && warnState[idx].loss) {
-      warnState[idx].loss = false;
-    }
+    // O aviso de perda alta agora usa a janela de 0,5 s (LOSS_PCT) em handleLoss:
+    // o campo "lost" do TELEM é um total acumulado e nunca volta a zero.
   }
 
   const wr = parseInt(wrPerHalfSec, 10);
@@ -604,36 +691,65 @@ function updateDeck(idx, fields, tcSecs, pktAgeMs, wrPerHalfSec, toneOn, i2sErr,
 function handleTelemetry(fields) {
   updateDeck(0, fields.slice(2, 7), fields[12], fields[14], fields[16], fields[18], fields[20], fields[22]);
   updateDeck(1, fields.slice(7, 12), fields[13], fields[15], fields[17], fields[19], fields[21], fields[23]);
+  if (window.Sig) window.Sig.onTelem(fields);
 }
 
 // ------------------------- CALIBRAÇÃO -------------------------
 function feedRpm(idx, connected, rpm) {
   const el = $('liveRpm' + idx);
   if (!el) return;
-  if (connected && Math.abs(rpm) >= 0.5) {
-    el.textContent = rpm.toFixed(2) + ' rpm';
-    el.className = 'live-rpm good';
-  } else {
-    el.textContent = '--';
-    el.className = 'live-rpm';
+  const spinning = connected && Math.abs(rpm) >= 0.5;
+  el.textContent = spinning ? rpm.toFixed(2) + ' rpm' : '--';
+  el.className = 'live-rpm' + (spinning ? ' good' : '');
+
+  const st = calibStability(idx);
+  const stabEl = $('calStab' + idx);
+  if (stabEl) {
+    if (!spinning) { stabEl.textContent = 'parado'; stabEl.className = 'stab off'; }
+    else if (st.reason === 'stale') { stabEl.textContent = 'sem telemetria'; stabEl.className = 'stab off'; }
+    else if (st.reason === 'spinup') { stabEl.textContent = 'estabilizando… (' + st.n + '/' + CALIB_WINDOW + ')'; stabEl.className = 'stab wait'; }
+    else if (st.ok) { stabEl.textContent = 'estável'; stabEl.className = 'stab ok'; }
+    else { stabEl.textContent = 'instável ±' + (st.spread / 2).toFixed(2); stabEl.className = 'stab bad'; }
+  }
+
+  const enabled = spinning && st.ok;
+  for (let s = 0; s < 3; s++) {
+    const b = $('capBtn' + idx + '_' + s);
+    if (b && b.disabled === enabled) b.disabled = !enabled;
   }
 }
 
 const CALIB_BASE_RPM = 33.3333;
 const CALIB_LABELS = ['0%', '+8%', '-8%'];
 const CALIB_EXPECT = [1.0, 1.08, 0.92];
+const CALIB_WINDOW = 8;        // amostras na janela de estabilidade (~4 s a 2 Hz)
+const CALIB_SPREAD_MAX = 0.30; // variação máx pico-a-pico da janela (rpm)
+const CALIB_STALE_MS = 1500;   // telemetria mais antiga que isso é considerada velha
+
+function calibStability(deckIdx) {
+  const hist = rpmHistory[deckIdx];
+  const n = hist.length;
+  if (Date.now() - rpmTime[deckIdx] > CALIB_STALE_MS || n === 0) return { ok: false, reason: 'stale', n: 0 };
+  if (n < CALIB_WINDOW) return { ok: false, reason: 'spinup', n: n };
+  let mn = Infinity, mx = -Infinity, sum = 0;
+  for (const v of hist) { if (v < mn) mn = v; if (v > mx) mx = v; sum += v; }
+  const spread = mx - mn;
+  return { ok: spread <= CALIB_SPREAD_MAX, reason: spread <= CALIB_SPREAD_MAX ? 'ok' : 'unstable', n: n, spread: spread, avg: sum / n };
+}
 
 function captureCalib(deckIdx, slot) {
-  const hist = rpmHistory[deckIdx];
-  if (hist.length < 3) {
-    logLine('Deck ' + (deckIdx + 1) + ': aguarde o deck girando em ' + CALIB_LABELS[slot] + ' (sem amostras suficientes).', 'bad');
+  const st = calibStability(deckIdx);
+  if (!st.ok) {
+    const why = st.reason === 'stale' ? 'sem telemetria recente'
+      : st.reason === 'spinup' ? 'prato ainda estabilizando — aguarde os ~4 s da janela'
+      : 'RPM instável (variação ' + st.spread.toFixed(2) + ' rpm)';
+    logLine('Deck ' + (deckIdx + 1) + ' não capturado em ' + CALIB_LABELS[slot] + ': ' + why + '.', 'bad');
     return;
   }
-  const win = hist.slice(-4);
-  const avg = win.reduce((a, b) => a + b, 0) / win.length;
+  const avg = st.avg;
   calibRpm[deckIdx][slot] = avg;
   $('calR' + deckIdx + '_' + slot).textContent = avg.toFixed(2) + ' rpm';
-  logLine('Capturado deck ' + (deckIdx + 1) + ' em ' + CALIB_LABELS[slot] + ': ' + avg.toFixed(2) + ' rpm');
+  logLine('Capturado deck ' + (deckIdx + 1) + ' em ' + CALIB_LABELS[slot] + ': ' + avg.toFixed(2) + ' rpm (estável, janela de ' + st.n + ' amostras)');
 }
 
 function calcCalib(deckIdx) {
@@ -709,6 +825,7 @@ function setToneStatus(idx, on) {
 
 // ------------------------- OUTROS PARSERS -------------------------
 function handleAudioStat(fields) {
+  if (window.Sig) window.Sig.onAudio(fields);
   const decks = [
     { name: 'A', count: fields[1], gap: fields[3], avg: fields[5], min: fields[6], undEl: 'undA', bufEl: 'bufA' },
     { name: 'B', count: fields[2], gap: fields[4], avg: fields[7], min: fields[8], undEl: 'undB', bufEl: 'bufB' }
@@ -776,14 +893,59 @@ function changeSlotDeck(slot, deck) {
 
 function handleLoss(fields) {
   const pairs = [['lossA', fields[1]], ['lossB', fields[2]]];
-  for (const [elId, pctStr] of pairs) {
+  pairs.forEach(([elId, pctStr], idx) => {
     const el = $(elId);
     const pct = parseInt(pctStr, 10);
     if (isNaN(pct) || pct === 255) { el.textContent = '--'; el.className = 'value'; }
     else {
       el.textContent = pct + '%';
       el.className = 'value ' + (pct < 3 ? 'good' : pct <= 10 ? 'warn' : 'bad');
+      const high = pct > LOSS_WARN_PCT;
+      if (high && !warnState[idx].loss) {
+        logLine('Deck ' + (idx === 0 ? 'A' : 'B') + ': perda de pacotes alta (' + pct + '% na janela de 0,5 s)', 'warn');
+        warnState[idx].loss = true;
+      } else if (!high && warnState[idx].loss) {
+        warnState[idx].loss = false;
+      }
     }
+  });
+  if (window.Sig) window.Sig.onLoss(fields);
+}
+
+let connStart = [null, null];
+let uptimeTicker = null;
+
+function formatDuration(ms) {
+  if (isNaN(ms) || ms <= 0) return '--';
+  const s = Math.floor(ms / 1000);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  return h > 0 ? h + ':' + String(m).padStart(2, '0') + ':' + String(sec).padStart(2, '0') : m + ':' + String(sec).padStart(2, '0');
+}
+
+function updateUptimeDisplay() {
+  const now = Date.now();
+  for (let i = 0; i < 2; i++) {
+    const el = i === 0 ? $('upA') : $('upB');
+    if (!el) continue;
+    if (connStart[i] !== null) {
+      el.textContent = formatDuration(now - connStart[i]);
+      el.className = 'value';
+    }
+    // if null, keep as is (set by UPTIME response or connected state)
+  }
+}
+
+function startUptimeTicker() {
+  if (uptimeTicker !== null) return;
+  uptimeTicker = setInterval(updateUptimeDisplay, 1000);
+}
+
+function stopUptimeTicker() {
+  if (uptimeTicker !== null) {
+    clearInterval(uptimeTicker);
+    uptimeTicker = null;
   }
 }
 
@@ -797,6 +959,22 @@ function handleLine(line) {
       $('fadeValue').textContent = fm[1] + 'ms';
       logLine('Fade de início: ' + fm[1] + 'ms', 'good');
     }
+    return;
+  }
+  if (line.startsWith('TIMECODE_OK,')) {
+    const tm = line.split(',')[1].trim();
+    const sel = $('tcModeSelect');
+    if (sel && (tm === '0' || tm === '1' || tm === '2')) {
+      sel.value = tm;
+      const name = tm === '1' ? 'Rekordbox' : (tm === '2' ? 'Traktor MK2' : 'Serato (CV02)');
+      const st = $('tcModeStatus');
+      if (st) { st.textContent = name; st.style.color = '#3fb950'; }
+      logLine('Timecode ativo: ' + name, 'good');
+    }
+    return;
+  }
+  if (line.startsWith('TIMECODE_ERR')) {
+    logLine('RX: ' + line, 'bad');
     return;
   }
   if (line.startsWith('RF_CHANNEL,')) {
@@ -813,6 +991,40 @@ function handleLine(line) {
     return;
   }
   if (line.startsWith('CHANNEL_ERR')) {
+    logLine('RX: ' + line, 'bad');
+    return;
+  }
+  if (line.startsWith('SCAN_NET|')) {
+    const sp = line.split('|');
+    scanNets.push({ ssid: sp.slice(4).join('|'), rssi: sp[2] });
+    return;
+  }
+  if (line.startsWith('SCAN_REPORT,')) {
+    clearTimeout(scanTimer);
+    const sm = line.match(/active=(\d+),same=(\d+),total=(\d+)/);
+    const active = sm ? sm[1] : '?';
+    const same = sm ? parseInt(sm[2], 10) : 0;
+    const total = sm ? sm[3] : '?';
+    let scanCls = 'good', scanWord = 'canal limpo', scanColor = '#3fb950';
+    if (same === 1 || same === 2) { scanCls = 'warn'; scanWord = 'ocupação moderada'; scanColor = '#d29922'; }
+    else if (same >= 3) { scanCls = 'bad'; scanWord = 'canal congestionado'; scanColor = '#f85149'; }
+    $('btnScan').disabled = false;
+    $('scanStatus').textContent = same + ' rede(s) no canal ' + active + ' — ' + scanWord;
+    $('scanStatus').style.color = scanColor;
+    $('scanResult').textContent = 'Canal ativo: ' + active + ' · ' + same + ' de ' + total + ' redes visíveis no mesmo canal.';
+    const shown = scanNets.slice(0, 6);
+    let listTxt = shown.map(n => ' • ' + (n.ssid || '(oculto)') + '  ' + n.rssi + ' dBm').join('\n');
+    if (scanNets.length > shown.length) listTxt += '\n • e mais ' + (scanNets.length - shown.length) + '...';
+    $('scanList').textContent = listTxt;
+    logLine('Scan: ' + same + '/' + total + ' redes no canal ' + active + ' (' + scanWord + ')', scanCls);
+    return;
+  }
+  if (line.startsWith('SCAN_ERR')) {
+    clearTimeout(scanTimer);
+    $('btnScan').disabled = false;
+    $('scanStatus').textContent = 'Falha na varredura';
+    $('scanStatus').style.color = '#f85149';
+    $('scanResult').textContent = 'RX: ' + line;
     logLine('RX: ' + line, 'bad');
     return;
   }
@@ -913,6 +1125,8 @@ function handleLine(line) {
   if (line.startsWith('DVS_RX_READY')) {
     logLine('Receptor conectado: ' + line);
     $('infoMsg').textContent = 'Receptor conectado. Telemetria em tempo real.';
+    // Garante exibição automática do uptime
+    startUptimeTicker();
     return;
   }
   if (line.startsWith('TELEM,')) {
@@ -947,7 +1161,13 @@ function handleLine(line) {
       const idx = parseInt(m[1], 10) - 1;
       const upEl = idx === 0 ? $('upA') : $('upB');
       const val = m[2];
-      upEl.textContent = (val === 'off') ? '--' : val;
+      if (val === 'off') {
+        upEl.textContent = '--';
+        connStart[idx] = null;
+      } else {
+        upEl.textContent = val;
+        // Não sobrescreve contador local se já conectado; mantém coerente
+      }
       upEl.className = 'value';
       logLine('Tempo conectado deck ' + m[1] + ': ' + val);
     }
@@ -1027,6 +1247,475 @@ function animate(time) {
 }
 requestAnimationFrame(animate);
 
+// ------------------------- SINAL E SESSÃO (gráficos, resumo, CSV) -------------------------
+// Guarda 1 amostra por TELEM (a cada 0,5 s): RSSI, perda, bateria, RPM, underruns.
+// Os gráficos e o CSV usam essas amostras; o resumo usa contadores incrementais,
+// então continua exato mesmo que as amostras mais antigas sejam descartadas (24 h).
+window.Sig = (function () {
+  const MAX_ROWS = 172800;   // ~24 h a 2 amostras/s
+  const GAP_MS = 2000;       // intervalo maior que isso = lacuna (serial parada): quebra a linha e não conta como tempo
+  const RSSI_WARN = -75;
+  const LOSS_BAD = 10;
+  const MAX_DELTA = 120;     // perdas acima disso numa janela de 0,5 s (100 Hz => 50 pkt) = seq do TX reiniciou, não é perda real
+  const COLORS = ['#58a6ff', '#f0883e'];
+
+  let rows, cur, st, g, dirty = false, hoverT = null, drawQueued = false;
+  const view = {};
+
+  const num = (s) => { const v = parseFloat(s); return isNaN(v) ? null : v; };
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const clock = (t, withSec) => { const d = new Date(t); return pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + (withSec ? ':' + pad2(d.getSeconds()) : ''); };
+  const stamp = (t) => { const d = new Date(t); return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + ' ' + clock(t, true) + '.' + String(d.getMilliseconds()).padStart(3, '0'); };
+  function fmtDur(ms) {
+    const s = Math.round(ms / 1000);
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+    return h ? h + ':' + pad2(m) + ':' + pad2(sec) : m + ':' + pad2(sec);
+  }
+  const windowMs = () => (parseInt($('sigWindow').value, 10) || 5) * 60000;
+  const active = () => { const v = $('view-sinal'); return !!v && v.classList.contains('active'); };
+
+  function newDeck() {
+    return {
+      samples: 0, connMs: 0, wasConn: null, discEvents: 0, discStart: null, maxDiscMs: 0,
+      rssiMin: null, rssiMax: null, rssiSum: 0, rssiN: 0, rssiLow: 0, hist: new Uint32Array(128),
+      lossSum: 0, lossN: 0, lossMax: null, lossBad: 0,
+      prevLost: null, lostTotal: 0, lostWorst: 0, seqResets: 0,
+      battFirst: null, battLast: null, battMin: null,
+      prevUnd: null, undTotal: 0, dmaMin: null
+    };
+  }
+  function reset() {
+    rows = []; cur = null; dirty = false;
+    st = [newDeck(), newDeck()];
+    g = { startT: null, lastT: null, totalMs: 0, rxReboots: 0, prevRxMs: null, prevT: null };
+  }
+  reset();
+
+  // ---------- coleta ----------
+  function onTelem(f) {
+    const t = Date.now();
+    const rxMs = num(f[1]);
+    if (g.prevRxMs !== null && rxMs !== null && rxMs < g.prevRxMs) {   // RX reiniciou: contadores acumulados voltaram a zero
+      g.rxReboots++;
+      st.forEach((s) => { s.prevLost = null; s.prevUnd = null; });
+    }
+    g.prevRxMs = rxMs;
+    const dt = g.prevT !== null ? t - g.prevT : 0;
+    const counted = (dt > 0 && dt <= GAP_MS) ? dt : 0;
+    g.prevT = t;
+    if (g.startT === null) g.startT = t;
+    g.lastT = t;
+    g.totalMs += counted;
+
+    const row = { t, rx: rxMs, d: [], und: [null, null], dma: [null, null], lossDone: false, audioDone: false };
+    for (let i = 0; i < 2; i++) {
+      const b = 2 + i * 5, s = st[i];
+      const conn = f[b] === '1';
+      let rssi = num(f[b + 1]); if (rssi !== null && rssi <= -127) rssi = null;
+      let batt = num(f[b + 2]); if (batt !== null && (batt < 0 || batt > 100)) batt = null;
+      const rpmC = num(f[b + 3]);
+      const lost = num(f[b + 4]);
+      const dr = { conn, rssi: conn ? rssi : null, batt, rpm: rpmC === null ? null : rpmC / 100, lost, dl: null, loss: null };
+
+      s.samples++;
+      if (s.wasConn === true && !conn) { s.discEvents++; s.discStart = t; }
+      if (s.wasConn === false && conn && s.discStart !== null) { s.maxDiscMs = Math.max(s.maxDiscMs, t - s.discStart); s.discStart = null; }
+      s.wasConn = conn;
+
+      if (conn) {
+        s.connMs += counted;
+        if (rssi !== null) {
+          s.rssiMin = s.rssiMin === null ? rssi : Math.min(s.rssiMin, rssi);
+          s.rssiMax = s.rssiMax === null ? rssi : Math.max(s.rssiMax, rssi);
+          s.rssiSum += rssi; s.rssiN++;
+          if (rssi < RSSI_WARN) s.rssiLow++;
+          s.hist[Math.min(127, Math.max(0, Math.round(rssi) + 127))]++;
+        }
+        if (batt !== null) {
+          if (s.battFirst === null) s.battFirst = batt;
+          s.battLast = batt;
+          s.battMin = s.battMin === null ? batt : Math.min(s.battMin, batt);
+        }
+      }
+      if (lost !== null) {
+        if (s.prevLost !== null) {
+          const delta = lost - s.prevLost;
+          if (delta < 0 || delta > MAX_DELTA) { s.seqResets++; dr.artifact = true; }
+          else { dr.dl = delta; s.lostTotal += delta; if (delta > s.lostWorst) s.lostWorst = delta; }
+        }
+        s.prevLost = lost;
+      }
+      row.d.push(dr);
+    }
+    rows.push(row);
+    cur = row;
+    dirty = true;
+    if (rows.length > MAX_ROWS) rows.splice(0, Math.floor(MAX_ROWS * 0.1));
+  }
+
+  function onAudio(f) {
+    if (!cur || cur.audioDone) return;
+    cur.audioDone = true;
+    for (let i = 0; i < 2; i++) {
+      const und = num(f[1 + i]);
+      const dma = num(f[i === 0 ? 6 : 8]);
+      cur.und[i] = und; cur.dma[i] = dma;
+      const s = st[i];
+      if (und !== null) {
+        if (s.prevUnd !== null && und > s.prevUnd) s.undTotal += und - s.prevUnd;
+        s.prevUnd = und;
+      }
+      if (dma !== null) s.dmaMin = s.dmaMin === null ? dma : Math.min(s.dmaMin, dma);
+    }
+  }
+
+  function onLoss(f) {
+    if (!cur || cur.lossDone) return;
+    cur.lossDone = true;
+    for (let i = 0; i < 2; i++) {
+      const p = num(f[1 + i]);
+      if (p === null || p === 255) continue;   // 255 = nenhum pacote na janela
+      if (cur.d[i].artifact) continue;         // TX reiniciou nesta janela: a perda alta é só o seq voltando a 0
+      cur.d[i].loss = p;
+      const s = st[i];
+      s.lossSum += p; s.lossN++;
+      if (s.lossMax === null || p > s.lossMax) s.lossMax = p;
+      if (p > LOSS_BAD) s.lossBad++;
+    }
+    scheduleDraw();
+  }
+
+  // ---------- gráficos ----------
+  function lowerBound(t) {
+    let lo = 0, hi = rows.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (rows[mid].t < t) lo = mid + 1; else hi = mid; }
+    return lo;
+  }
+  function nearest(t) {
+    if (!rows.length) return -1;
+    const i = lowerBound(t);
+    if (i <= 0) return 0;
+    if (i >= rows.length) return rows.length - 1;
+    return (t - rows[i - 1].t <= rows[i].t - t) ? i - 1 : i;
+  }
+  function prep(cv) {
+    const w = cv.clientWidth, h = cv.clientHeight;
+    if (!w || !h) return null;
+    const dpr = window.devicePixelRatio || 1;
+    const pw = Math.round(w * dpr), ph = Math.round(h * dpr);
+    if (cv.width !== pw || cv.height !== ph) { cv.width = pw; cv.height = ph; }
+    const ctx = cv.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { ctx, w, h };
+  }
+
+  const RSSI_OPTS = {
+    yMin: -100, yMax: () => -30, yStep: () => 10, yFmt: (v) => String(v), threshold: -75, strips: true,
+    val: (r, d) => r.d[d].rssi,
+    tip: (r, d) => (r.d[d].conn ? (r.d[d].rssi === null ? '--' : r.d[d].rssi + ' dBm') : 'desconectado')
+  };
+  const LOSS_OPTS = {
+    yMin: 0, threshold: LOSS_BAD, strips: false, step: true,
+    yMax: (i0) => {
+      let m = 0;
+      for (let i = i0; i < rows.length; i++) for (let d = 0; d < 2; d++) { const v = rows[i].d[d].loss; if (v !== null && v > m) m = v; }
+      return Math.max(10, Math.ceil(m * 1.15 / 5) * 5);
+    },
+    yStep: (ymax) => (ymax <= 20 ? 5 : ymax <= 50 ? 10 : 20),
+    yFmt: (v) => v + '%',
+    val: (r, d) => r.d[d].loss,
+    tip: (r, d) => (r.d[d].loss === null ? '--' : r.d[d].loss + '%')
+  };
+
+  function drawChart(id, o) {
+    const cv = $(id);
+    const s = prep(cv);
+    if (!s) return;
+    const { ctx, w, h } = s;
+    const L = 46, R = 12, T = 10, B = 28;
+    const x0 = L, x1 = w - R, y0 = T, y1 = h - B;
+    const win = windowMs();
+    const tEnd = (window.__serialConnected || !rows.length) ? Date.now() : rows[rows.length - 1].t;
+    const tStart = tEnd - win;
+    const i0 = lowerBound(tStart);
+    const yMin = o.yMin, yMax = o.yMax(i0), yStep = o.yStep(yMax);
+    const X = (t) => x0 + (t - tStart) / win * (x1 - x0);
+    const Y = (v) => y1 - (v - yMin) / (yMax - yMin) * (y1 - y0);
+    view[id] = { tStart, tEnd, x0, x1 };
+
+    ctx.clearRect(0, 0, w, h);
+    ctx.font = '11px Consolas, monospace';
+    ctx.lineWidth = 1;
+
+    // grade horizontal + rótulos Y
+    ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+    for (let v = Math.ceil(yMin / yStep) * yStep; v <= yMax + 1e-9; v += yStep) {
+      const y = Math.round(Y(v)) + 0.5;
+      ctx.strokeStyle = '#21262d';
+      ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
+      ctx.fillStyle = '#6e7681';
+      ctx.fillText(o.yFmt(v), x0 - 6, y);
+    }
+    // grade vertical + horas reais
+    const steps = [10e3, 30e3, 60e3, 120e3, 300e3, 600e3, 900e3, 1800e3];
+    let step = steps[steps.length - 1];
+    for (const sv of steps) { if (win / sv <= 8) { step = sv; break; } }
+    const off = new Date(tStart).getTimezoneOffset() * 60000;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    for (let t = Math.ceil((tStart - off) / step) * step + off; t <= tEnd; t += step) {
+      const x = Math.round(X(t)) + 0.5;
+      ctx.strokeStyle = '#21262d';
+      ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y1); ctx.stroke();
+      ctx.fillStyle = '#6e7681';
+      ctx.fillText(clock(t, step < 60e3), Math.min(x, w - 18), y1 + 6);
+    }
+    ctx.strokeStyle = '#30363d';
+    ctx.strokeRect(x0 + 0.5, y0 + 0.5, x1 - x0, y1 - y0);
+
+    const vis = rows.length - i0;
+    if (vis <= 0) {
+      ctx.fillStyle = '#6e7681'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(rows.length ? 'Sem amostras nesta janela.' : 'Sem dados. Conecte ao receptor.', (x0 + x1) / 2, (y0 + y1) / 2);
+      return;
+    }
+
+    ctx.save();
+    ctx.beginPath(); ctx.rect(x0, y0, x1 - x0, y1 - y0); ctx.clip();
+
+    if (o.threshold !== undefined && o.threshold >= yMin && o.threshold <= yMax) {
+      const y = Math.round(Y(o.threshold)) + 0.5;
+      ctx.strokeStyle = '#d29922'; ctx.setLineDash([5, 4]);
+      ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    for (let d = 0; d < 2; d++) {
+      ctx.strokeStyle = COLORS[d]; ctx.lineWidth = 1.6; ctx.lineJoin = 'round';
+      ctx.beginPath();
+      let open = false, prevT = 0, prevY = 0;
+      for (let i = Math.max(0, i0 - 1); i < rows.length; i++) {
+        const r = rows[i];
+        const v = o.val(r, d);
+        if (v === null || v === undefined) { open = false; continue; }
+        if (open && r.t - prevT > GAP_MS) open = false;
+        const x = X(r.t), y = Y(Math.min(yMax, Math.max(yMin, v)));
+        if (!open) { ctx.moveTo(x, y); open = true; }
+        else if (o.step) { ctx.lineTo(x, prevY); ctx.lineTo(x, y); }
+        else ctx.lineTo(x, y);
+        prevT = r.t; prevY = y;
+      }
+      ctx.stroke();
+    }
+
+    if (o.strips) {   // faixas no rodapé: deck desconectado
+      for (let d = 0; d < 2; d++) {
+        ctx.fillStyle = COLORS[d];
+        let startX = null, lastX = null;
+        const flush = () => { if (startX !== null) ctx.fillRect(startX, y1 - 7 + d * 3.5, Math.max(2, lastX - startX), 3); startX = null; };
+        for (let i = Math.max(0, i0 - 1); i < rows.length; i++) {
+          const r = rows[i];
+          if (!r.d[d].conn) {
+            const xa = X(r.t - 250), xb = X(r.t + 250);
+            if (startX === null) startX = xa;
+            lastX = xb;
+          } else flush();
+        }
+        flush();
+      }
+    }
+    ctx.restore();
+
+    if (hoverT !== null && hoverT >= tStart && hoverT <= tEnd) {
+      const j = nearest(hoverT);
+      if (j >= 0) {
+        const r = rows[j];
+        const x = Math.round(X(r.t)) + 0.5;
+        ctx.strokeStyle = '#8b949e'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y1); ctx.stroke();
+        const txt = clock(r.t, true) + '   A: ' + o.tip(r, 0) + '   B: ' + o.tip(r, 1);
+        ctx.font = '12px Consolas, monospace';
+        const tw = ctx.measureText(txt).width + 12;
+        const bx = Math.min(Math.max(x0 + 4, x + 8), x1 - tw - 4);
+        ctx.fillStyle = 'rgba(13,17,23,0.92)'; ctx.fillRect(bx, y0 + 4, tw, 20);
+        ctx.strokeStyle = '#30363d'; ctx.strokeRect(bx + 0.5, y0 + 4.5, tw, 20);
+        ctx.fillStyle = '#e6edf3'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+        ctx.fillText(txt, bx + 6, y0 + 14);
+      }
+    }
+  }
+
+  function draw() {
+    drawChart('chRssi', RSSI_OPTS);
+    drawChart('chLoss', LOSS_OPTS);
+  }
+  function scheduleDraw() {
+    if (drawQueued || !active()) return;
+    drawQueued = true;
+    requestAnimationFrame(() => { drawQueued = false; draw(); renderSummary(); });
+  }
+
+  // ---------- resumo ----------
+  function pctile(hist, n, p) {
+    if (!n) return null;
+    const target = Math.ceil(n * p);
+    let acc = 0;
+    for (let i = 0; i < hist.length; i++) { acc += hist[i]; if (acc >= target) return i - 127; }
+    return null;
+  }
+  const cls3 = (v, goodBelow, warnBelow) => (v < goodBelow ? 'good' : v < warnBelow ? 'warn' : 'bad');
+
+  function summaryRows() {
+    const out = [];
+    const per = (label, fn) => out.push([label, fn(st[0]), fn(st[1])]);
+    const none = ['--', ''];
+    per('Tempo conectado', (s) => {
+      if (!g.totalMs) return none;
+      const r = s.connMs / g.totalMs;
+      return [fmtDur(s.connMs) + ' (' + (r * 100).toFixed(1) + '%)', r >= 0.99 ? 'good' : r >= 0.95 ? 'warn' : 'bad'];
+    });
+    per('Quedas de conexão', (s) => {
+      if (s.wasConn === null) return none;
+      const ongoing = (s.wasConn === false && s.discStart !== null) ? g.lastT - s.discStart : 0;
+      const longest = Math.max(s.maxDiscMs, ongoing);
+      return [s.discEvents + (s.discEvents ? ' (maior ' + fmtDur(longest) + ')' : ''), s.discEvents === 0 ? 'good' : s.discEvents <= 2 ? 'warn' : 'bad'];
+    });
+    per('RSSI mín / médio / máx', (s) => s.rssiN ? [s.rssiMin + ' / ' + (s.rssiSum / s.rssiN).toFixed(0) + ' / ' + s.rssiMax + ' dBm', ''] : none);
+    per('RSSI p5 (95% do tempo acima de)', (s) => {
+      const p = pctile(s.hist, s.rssiN, 0.05);
+      return p === null ? none : [p + ' dBm', p >= -70 ? 'good' : p >= -75 ? 'warn' : 'bad'];
+    });
+    per('Tempo abaixo de ' + RSSI_WARN + ' dBm', (s) => {
+      if (!s.rssiN) return none;
+      const r = s.rssiLow / s.rssiN * 100;
+      return [r.toFixed(1) + '%', cls3(r, 1, 5)];
+    });
+    per('Perda média / pior janela', (s) => {
+      if (!s.lossN) return none;
+      const avg = s.lossSum / s.lossN;
+      return [avg.toFixed(2) + '% / ' + s.lossMax + '%', cls3(avg, 0.5, 3)];
+    });
+    per('Janelas com perda > ' + LOSS_BAD + '%', (s) => {
+      if (!s.lossN) return none;
+      return [s.lossBad + ' de ' + s.lossN, s.lossBad === 0 ? 'good' : (s.lossBad / s.lossN < 0.01 ? 'warn' : 'bad')];
+    });
+    per('Pacotes perdidos (pior janela)', (s) => (s.samples ? [s.lostTotal + ' (' + s.lostWorst + ')', ''] : none));
+    per('Reinícios do TX detectados', (s) => (s.samples ? [String(s.seqResets), s.seqResets === 0 ? 'good' : 'warn'] : none));
+    per('Bateria do TX', (s) => (s.battFirst === null ? none : [s.battFirst + '% → ' + s.battLast + '% (mín ' + s.battMin + '%)', s.battLast > 40 ? 'good' : s.battLast > 15 ? 'warn' : 'bad']));
+    per('Underruns DMA / buffer mínimo', (s) => (s.dmaMin === null ? none : [s.undTotal + ' / ' + s.dmaMin + '%', s.undTotal === 0 ? 'good' : 'bad']));
+    return out;
+  }
+
+  function metaText() {
+    if (g.startT === null) return 'Sem dados. Conecte ao receptor para começar a gravar.';
+    return 'Sessão iniciada às ' + clock(g.startT, true) + ' · duração ' + fmtDur(g.lastT - g.startT) +
+           ' · ' + rows.length + ' amostras (1 a cada 0,5 s)' +
+           (g.rxReboots ? ' · RX reiniciou ' + g.rxReboots + 'x' : '');
+  }
+
+  function renderSummary() {
+    if (!active()) return;
+    $('sigMeta').textContent = metaText();
+    const tb = $('sigSummary');
+    if (g.startT === null) { tb.innerHTML = ''; return; }
+    let html = '<tr><th>Métrica</th><th>Deck A</th><th>Deck B</th></tr>';
+    for (const [label, a, b] of summaryRows()) {
+      html += '<tr><td class="k">' + label + '</td><td class="' + a[1] + '">' + a[0] + '</td><td class="' + b[1] + '">' + b[0] + '</td></tr>';
+    }
+    tb.innerHTML = html;
+  }
+
+  function summaryText() {
+    let t = 'DVS - resumo da sessão\n' + metaText() + '\n\n';
+    for (const [label, a, b] of summaryRows()) t += label + ': A ' + a[0] + ' | B ' + b[0] + '\n';
+    return t;
+  }
+
+  async function copySummary() {
+    if (g.startT === null) { logLine('Sem dados para resumir.', 'bad'); return; }
+    try { await navigator.clipboard.writeText(summaryText()); logLine('Resumo da sessão copiado.', 'good'); }
+    catch (e) { logLine('Não foi possível copiar o resumo: ' + e.message, 'bad'); }
+  }
+
+  // ---------- CSV ----------
+  function buildCsv(br) {
+    const sep = br ? ';' : ',';
+    const n = (v, dg) => {
+      if (v === null || v === undefined || isNaN(v)) return '';
+      const s = dg === undefined ? String(v) : v.toFixed(dg);
+      return br ? s.replace('.', ',') : s;
+    };
+    const head = ['hora', 't_s', 'rx_uptime_s'];
+    ['a', 'b'].forEach((p) => head.push(p + '_conectado', p + '_rssi_dbm', p + '_perda_pct', p + '_perdidos_janela', p + '_perdidos_total', p + '_bateria_pct', p + '_rpm'));
+    head.push('underruns_a', 'underruns_b', 'dma_min_a_pct', 'dma_min_b_pct');
+    const out = [head.join(sep)];
+    const t0 = rows[0].t;
+    for (const r of rows) {
+      const c = [stamp(r.t), n((r.t - t0) / 1000, 1), n(r.rx === null ? null : r.rx / 1000, 1)];
+      for (let i = 0; i < 2; i++) {
+        const d = r.d[i];
+        c.push(d.conn ? '1' : '0', n(d.rssi), n(d.loss), n(d.dl), n(d.lost), n(d.batt), n(d.rpm, 2));
+      }
+      c.push(n(r.und[0]), n(r.und[1]), n(r.dma[0]), n(r.dma[1]));
+      out.push(c.join(sep));
+    }
+    return out.join('\n') + '\n';
+  }
+
+  function exportCsv() {
+    if (!rows.length) { logLine('Nada para exportar: ainda não chegou telemetria.', 'bad'); return; }
+    const csv = buildCsv($('csvFormat').value === 'br');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const d = new Date();
+    a.href = url;
+    a.download = 'dvs_sinal_' + d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + '_' + pad2(d.getHours()) + '-' + pad2(d.getMinutes()) + '-' + pad2(d.getSeconds()) + '.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    dirty = false;
+    logLine('CSV exportado (' + rows.length + ' amostras).', 'good');
+  }
+
+  function newSession() {
+    if (rows.length && dirty && !confirm('Há amostras ainda não exportadas. Iniciar nova sessão e descartá-las?')) return;
+    reset();
+    draw();
+    renderSummary();
+    logLine('Nova sessão de sinal iniciada.');
+  }
+
+  // ---------- eventos ----------
+  function bindHover(id) {
+    const cv = $(id);
+    cv.addEventListener('mousemove', (e) => {
+      const v = view[id];
+      if (!v) return;
+      const x = e.clientX - cv.getBoundingClientRect().left;
+      hoverT = (x < v.x0 || x > v.x1) ? null : v.tStart + (x - v.x0) / (v.x1 - v.x0) * (v.tEnd - v.tStart);
+      draw();
+    });
+    cv.addEventListener('mouseleave', () => { hoverT = null; draw(); });
+  }
+  bindHover('chRssi');
+  bindHover('chLoss');
+  $('sigWindow').addEventListener('change', draw);
+  $('btnCsv').addEventListener('click', exportCsv);
+  $('btnCopySummary').addEventListener('click', copySummary);
+  $('btnSigClear').addEventListener('click', newSession);
+  window.addEventListener('resize', () => { if (active()) draw(); });
+  window.addEventListener('beforeunload', (e) => {
+    if (rows.length > 120 && dirty) { e.preventDefault(); e.returnValue = ''; }
+  });
+  setInterval(() => { if (active()) renderSummary(); }, 1000);
+
+  function onShow() { draw(); renderSummary(); }
+  onShow();
+
+  return { onTelem, onAudio, onLoss, onShow, draw, exportCsv, copySummary, buildCsv, newSession, _debug: () => ({ rows, st, g }) };
+})();
+
 // ------------------------- SERIAL -------------------------
 async function readLoop() {
   const decoder = new TextDecoder();
@@ -1063,6 +1752,7 @@ async function connect() {
     sendSerialCmd('VOLUME');
     sendSerialCmd('DECK_STATUS');
     sendSerialCmd('FADE');
+    sendSerialCmd('TIMECODE');
     sendSerialCmd('FILTER? 1');
     sendSerialCmd('FILTER? 2');
     sendSerialCmd('TX_POWER?');
@@ -1096,6 +1786,10 @@ async function disconnect() {
   if (window.Sidebar) window.Sidebar.setConnectionStatus(false);
   $('linkBadge').textContent = 'Desconectado';
   $('linkBadge').className = 'badge off';
+  connStart = [null, null];
+  $('upA').textContent = '--';
+  $('upB').textContent = '--';
+  stopUptimeTicker();
   logLine('Porta serial fechada.');
 }
 
@@ -1118,11 +1812,12 @@ window.disconnect = disconnect;
 window.restartRX = restartRX;
 
 // ------------------------- UI LISTENERS -------------------------
-$('btnUptime').addEventListener('click', () => sendSerialCmd('UPTIME'));
+// Botão de Tempo conectado removido - uptime agora é atualizado automaticamente
 
-$('btnExportLog').addEventListener('click', exportSessionLog);
-$('btnClearLog').addEventListener('click', clearSessionLog);
-$('chRecordLog').addEventListener('change', () => { sessionRecording = $('chRecordLog').checked; });
+// Exportar .txt, limpar e contador de linhas removidos da tela inicial
+// $('btnExportLog').addEventListener('click', exportSessionLog);
+// $('btnClearLog').addEventListener('click', clearSessionLog);
+// $('chRecordLog').addEventListener('change', () => { sessionRecording = $('chRecordLog').checked; });
 
 $('btnTestA').addEventListener('click', () => { setToneStatus(0, false); $('toneStatusB').className = 'label'; sendSerialCmd('TEST_A'); });
 $('btnTestB').addEventListener('click', () => { setToneStatus(1, false); $('toneStatusA').className = 'label'; sendSerialCmd('TEST_B'); });
@@ -1177,6 +1872,41 @@ $('fadeInput').addEventListener('change', () => {
   sendSerialCmd('FADE ' + ms);
   logLine('Fade de início: ' + ms + 'ms');
 });
+
+// Sinal de timecode (Serato/Rekordbox/Traktor): envia a escolha ao RX (salva em NVS).
+$('btnApplyTc').addEventListener('click', () => {
+  const v = $('tcModeSelect').value;
+  const cmd = v === '1' ? 'rekordbox' : (v === '2' ? 'traktor' : 'serato');
+  const name = v === '1' ? 'Rekordbox' : (v === '2' ? 'Traktor MK2' : 'Serato (CV02)');
+  sendSerialCmd('TIMECODE ' + cmd);
+  logLine('Timecode selecionado: ' + name);
+});
+
+// ------------------------- DIAGNÓSTICO DE CANAL -------------------------
+let scanNets = [];
+let scanTimer = null;
+
+function runChannelScan() {
+  if (!port) { logLine('Conecte primeiro.', 'bad'); return; }
+  scanNets = [];
+  $('scanList').textContent = '';
+  $('scanResult').textContent = 'Varrendo... (o RX sai do canal por ~1 s e volta em seguida)';
+  $('scanStatus').textContent = 'Executando...';
+  $('scanStatus').style.color = '#8b949e';
+  $('btnScan').disabled = true;
+  sendSerialCmd('SCAN_REPORT');
+  clearTimeout(scanTimer);
+  scanTimer = setTimeout(() => {
+    $('btnScan').disabled = false;
+    if ($('scanStatus').textContent === 'Executando...') {
+      $('scanStatus').textContent = 'Sem resposta';
+      $('scanStatus').style.color = '#f85149';
+      $('scanResult').textContent = 'O RX não respondeu ao scan (timeout). Verifique a conexão.';
+    }
+  }, 15000);
+}
+
+$('btnScan').addEventListener('click', runChannelScan);
 </script>
 </body>
 </html>
