@@ -33,6 +33,8 @@
   .badge.on { background: #1a7f37; color: #fff; }
   .badge.off { background: #30363d; color: #8b949e; }
   .badge.info { background: #1f6feb; color: #fff; }
+  .badge.bad { background: #da3633; color: #fff; }
+  .badge.warn { background: #9e6a03; color: #fff; }
   .btn {
     background: #238636;
     color: #fff;
@@ -192,7 +194,6 @@
           <div class="row"><span class="label">RPM</span><span class="value" id="rpmA">--</span></div>
           <div class="row"><span class="label">Timecode</span><span class="value" id="tcA">--</span></div>
           <div class="row"><span class="label">Estado</span><span class="value" id="statusA">--</span></div>
-          <div class="row"><span class="label">Deck (TX atual)</span><span class="value" id="cfgIdA">--</span></div>
           <div class="row"><span class="label">Pacotes perdidos</span><span class="value" id="lostA">--</span></div>
           <div class="row"><span class="label">Chegada de pkt</span><span class="value" id="pktA">--</span></div>
           <div class="row"><span class="label">Perda (janela 0,5s)</span><span class="value" id="lossA">--</span></div>
@@ -214,7 +215,6 @@
           <div class="row"><span class="label">RPM</span><span class="value" id="rpmB">--</span></div>
           <div class="row"><span class="label">Timecode</span><span class="value" id="tcB">--</span></div>
           <div class="row"><span class="label">Estado</span><span class="value" id="statusB">--</span></div>
-          <div class="row"><span class="label">Deck (TX atual)</span><span class="value" id="cfgIdB">--</span></div>
           <div class="row"><span class="label">Pacotes perdidos</span><span class="value" id="lostB">--</span></div>
           <div class="row"><span class="label">Chegada de pkt</span><span class="value" id="pktB">--</span></div>
           <div class="row"><span class="label">Perda (janela 0,5s)</span><span class="value" id="lossB">--</span></div>
@@ -241,6 +241,10 @@
         <option value="15">15 min</option>
         <option value="30">30 min</option>
         <option value="60">60 min</option>
+        <option value="120">2 h</option>
+        <option value="360">6 h</option>
+        <option value="720">12 h</option>
+        <option value="1440">24 h</option>
       </select>
       <span class="spacer"></span>
       <span class="label">CSV:</span>
@@ -263,6 +267,12 @@
       <h2>Perda de pacotes <span style="color:#8b949e;font-weight:400;font-size:13px;">(por janela de 0,5 s)</span> <span class="sig-legend"><span><i style="background:#58a6ff"></i>Deck A</span><span><i style="background:#f0883e"></i>Deck B</span></span></h2>
       <canvas id="chLoss" class="sig-chart"></canvas>
       <div class="sig-hint">Linha tracejada: 10% (a partir daí o dashboard marca como alto).</div>
+    </div>
+
+    <div class="card">
+      <h2>Heap (RX) <span style="color:#8b949e;font-weight:400;font-size:13px;">(a cada 5 min)</span> <span class="sig-legend"><span><i style="background:#3fb950"></i>Livre</span><span><i style="background:#d29922"></i>Mínimo</span></span></h2>
+      <canvas id="chHeap" class="sig-chart"></canvas>
+      <div class="sig-hint">Linha verde: heap livre atual. Linha tracejada amarela: menor valor já visto (minFreeHeap). Se o mínimo cair continuamente ao longo das horas, indica fragmentação de heap.</div>
     </div>
 
     <div class="card">
@@ -396,22 +406,16 @@
           <input id="fadeInput" type="range" min="0" max="1000" step="50" value="200" style="flex:1;max-width:260px;accent-color:#58a6ff;cursor:pointer;">
           <span class="channel-badge" id="fadeValue">200ms</span>
         </div>
-        <div class="info-msg">Os valores são salvos no RX e persistem após reiniciar. Use o teste de áudio para conferir o nível dos DACs. O fade de início (0 a 1000ms) suaviza o timecode ao começar a girar o toca-discos, evitando o "pio" inicial.</div>
-      </div>
-
-      <div class="card">
-        <h2>Sinal de Timecode</h2>
-        <div class="toolbar" style="margin-bottom:8px;">
-          <span class="label" style="width:120px;">Formato:</span>
-          <select id="tcModeSelect" style="min-width:200px;">
+        <div class="toolbar" style="margin-bottom:0;margin-top:8px;">
+          <span class="label" style="width:120px;">Timecode:</span>
+          <select id="timecodeSelect" style="min-width:200px;">
             <option value="0">Serato (CV02)</option>
             <option value="1">Rekordbox</option>
-            <option value="2">Traktor MK2</option>
+            <option value="2">Traktor</option>
           </select>
-          <button id="btnApplyTc" class="btn small">Aplicar</button>
-          <span id="tcModeStatus" class="label" style="margin-left:12px;">—</span>
+          <span class="channel-badge" id="timecodeValue">--</span>
         </div>
-        <div class="info-msg">Define qual timecode o RX gera nas saídas de áudio (DAC A/B). A escolha é salva no RX e persiste após reiniciar.</div>
+        <div class="info-msg">Os valores são salvos no RX e persistem após reiniciar. Use o teste de áudio para conferir o nível dos DACs. O fade de início (0 a 1000ms) suaviza o timecode ao começar a girar o toca-discos, evitando o "pio" inicial. O modo de timecode deve casar com o software (Serato/Rekordbox/Traktor).</div>
       </div>
 
       <div class="card">
@@ -457,13 +461,40 @@
       </div>
 
       <div class="card">
-        <h2>Diagnóstico de canal <span style="color:#8b949e;font-weight:400;font-size:13px;">(somente leitura)</span></h2>
-        <div class="toolbar" style="margin-bottom:12px;">
-          <button id="btnScan" class="btn small">Escanear redes 2.4GHz</button>
-          <span id="scanStatus" class="label" style="margin-left:12px;">—</span>
+        <h2>Canal Wi-Fi (ESP-NOW) <span style="color:#8b949e;font-weight:400;font-size:13px;">(scan manual — reinicia o RX)</span></h2>
+        <div class="toolbar" style="margin-bottom:8px;">
+          <span class="label" style="width:120px;">Canal atual:</span>
+          <span class="channel-badge" id="chBadgeGeral">--</span>
+          <button id="btnScanChannels" class="btn small">Escanear canais</button>
         </div>
-        <div id="scanResult" class="info-msg" style="margin-bottom:8px;">Varre as redes visíveis e mostra quantas ocupam o mesmo canal do RX. Não altera o canal em uso.</div>
-        <div id="scanList" style="font-family:monospace;font-size:12px;color:#8b949e;white-space:pre-wrap;line-height:1.5;"></div>
+        <div id="scanResult" class="info-msg">Clique em "Escanear canais" para listar as redes 2.4 GHz. Ao escolher um canal, o RX reinicia já nele (o link com os TXs cai por alguns segundos).</div>
+        <div id="scanList" style="display:flex;flex-direction:column;gap:6px;margin-top:8px;"></div>
+      </div>
+
+      <div class="card">
+        <h2>Estado do Rádio <span style="color:#8b949e;font-weight:400;font-size:13px;">(resumo do RX)</span></h2>
+        <div class="toolbar" style="margin-bottom:8px;">
+          <span class="label" style="width:120px;">Canal:</span>
+          <span class="channel-badge" id="radioCh">--</span>
+          <span class="label" style="width:120px;margin-left:16px;">Potência TX:</span>
+          <span class="channel-badge" id="radioTx">--</span>
+          <button id="btnRadioRefresh" class="btn small" style="margin-left:auto;">Atualizar</button>
+        </div>
+        <div class="toolbar" style="margin-bottom:8px;">
+          <span class="label" style="width:120px;">Modo Wi-Fi:</span>
+          <span class="channel-badge" id="radioMode">--</span>
+          <span class="label" style="width:120px;margin-left:16px;">Long Range:</span>
+          <span class="channel-badge" id="radioLr">--</span>
+        </div>
+        <div class="toolbar" style="margin-bottom:0;">
+          <span class="label" style="width:120px;">Heap livre:</span>
+          <span class="channel-badge" id="radioHeap">--</span>
+          <span class="label" style="width:120px;margin-left:16px;">Heap mínimo:</span>
+          <span class="channel-badge" id="radioMinHeap">--</span>
+          <span class="label" style="width:120px;margin-left:16px;">Uptime:</span>
+          <span class="channel-badge" id="radioUptime">--</span>
+        </div>
+        <div class="info-msg">Estado do rádio do RX (canal ESP-NOW, potência de transmissão, modo Wi-Fi, Long Range, heap e tempo ligado). Clique em "Atualizar" para consultar.</div>
       </div>
     </div>
   </section>
@@ -488,6 +519,11 @@ let reader = null;
 let writer = null;
 let buffer = '';
 let lastUpdate = 0;
+
+// Resultados do scan de canais (SCAN_NET|ch|rssi|auth|ssid)
+let scanNets = [];
+let scanActive = false;
+let scanTimeoutId = null;
 
 const $ = (id) => document.getElementById(id);
 
@@ -866,8 +902,6 @@ const cfgState = [
 function renderCfg(idx) {
   const s = cfgState[idx];
   const suffix = idx === 0 ? 'A' : 'B';
-  const idEl = $('cfgId' + suffix);
-  idEl.textContent = s.deckId ? (s.deckId === 1 ? 'Deck A' : 'Deck B') : '--';
   const row = idx + 1;
   const a = $('slot' + row + 'A');
   const b = $('slot' + row + 'B');
@@ -961,22 +995,6 @@ function handleLine(line) {
     }
     return;
   }
-  if (line.startsWith('TIMECODE_OK,')) {
-    const tm = line.split(',')[1].trim();
-    const sel = $('tcModeSelect');
-    if (sel && (tm === '0' || tm === '1' || tm === '2')) {
-      sel.value = tm;
-      const name = tm === '1' ? 'Rekordbox' : (tm === '2' ? 'Traktor MK2' : 'Serato (CV02)');
-      const st = $('tcModeStatus');
-      if (st) { st.textContent = name; st.style.color = '#3fb950'; }
-      logLine('Timecode ativo: ' + name, 'good');
-    }
-    return;
-  }
-  if (line.startsWith('TIMECODE_ERR')) {
-    logLine('RX: ' + line, 'bad');
-    return;
-  }
   if (line.startsWith('RF_CHANNEL,')) {
     const raw = line.split(',')[1].trim();
     const chm = raw.match(/^(\d+)/);
@@ -984,6 +1002,7 @@ function handleLine(line) {
       const ch = chm[1];
       $('chBadge').textContent = 'Canal ' + ch;
       $('chBadge').className = 'badge info';
+      if ($('chBadgeGeral')) { $('chBadgeGeral').textContent = 'Canal ' + ch; }
       logLine('Canal atual: ' + ch, 'good');
     } else {
       logLine('RF_CHANNEL: ' + line, 'warn');
@@ -995,37 +1014,35 @@ function handleLine(line) {
     return;
   }
   if (line.startsWith('SCAN_NET|')) {
-    const sp = line.split('|');
-    scanNets.push({ ssid: sp.slice(4).join('|'), rssi: sp[2] });
+    const p = line.split('|');
+    if (p.length >= 5) {
+      scanNets.push({ ch: parseInt(p[1], 10), rssi: parseInt(p[2], 10), auth: parseInt(p[3], 10), ssid: p.slice(4).join('|') });
+    }
+    return;
+  }
+  if (line.startsWith('SCAN_DONE,')) {
+    renderScanList(parseInt(line.split(',')[1], 10) || 0);
     return;
   }
   if (line.startsWith('SCAN_REPORT,')) {
-    clearTimeout(scanTimer);
-    const sm = line.match(/active=(\d+),same=(\d+),total=(\d+)/);
-    const active = sm ? sm[1] : '?';
-    const same = sm ? parseInt(sm[2], 10) : 0;
-    const total = sm ? sm[3] : '?';
-    let scanCls = 'good', scanWord = 'canal limpo', scanColor = '#3fb950';
-    if (same === 1 || same === 2) { scanCls = 'warn'; scanWord = 'ocupação moderada'; scanColor = '#d29922'; }
-    else if (same >= 3) { scanCls = 'bad'; scanWord = 'canal congestionado'; scanColor = '#f85149'; }
-    $('btnScan').disabled = false;
-    $('scanStatus').textContent = same + ' rede(s) no canal ' + active + ' — ' + scanWord;
-    $('scanStatus').style.color = scanColor;
-    $('scanResult').textContent = 'Canal ativo: ' + active + ' · ' + same + ' de ' + total + ' redes visíveis no mesmo canal.';
-    const shown = scanNets.slice(0, 6);
-    let listTxt = shown.map(n => ' • ' + (n.ssid || '(oculto)') + '  ' + n.rssi + ' dBm').join('\n');
-    if (scanNets.length > shown.length) listTxt += '\n • e mais ' + (scanNets.length - shown.length) + '...';
-    $('scanList').textContent = listTxt;
-    logLine('Scan: ' + same + '/' + total + ' redes no canal ' + active + ' (' + scanWord + ')', scanCls);
+    renderScanList(null, line.substring('SCAN_REPORT,'.length));
     return;
   }
   if (line.startsWith('SCAN_ERR')) {
-    clearTimeout(scanTimer);
-    $('btnScan').disabled = false;
-    $('scanStatus').textContent = 'Falha na varredura';
-    $('scanStatus').style.color = '#f85149';
-    $('scanResult').textContent = 'RX: ' + line;
+    scanActive = false;
+    if (scanTimeoutId) { clearTimeout(scanTimeoutId); scanTimeoutId = null; }
+    if ($('scanResult')) $('scanResult').textContent = 'Falha na varredura. Tente novamente.';
     logLine('RX: ' + line, 'bad');
+    return;
+  }
+  if (line.startsWith('CHANNEL_REBOOT,')) {
+    const ch = line.split(',')[1].trim();
+    logLine('RX reiniciando no canal ' + ch + '...', 'warn');
+    if ($('chBadgeGeral')) { $('chBadgeGeral').textContent = 'Canal ' + ch + ' (reiniciando)'; }
+    return;
+  }
+  if (line.startsWith('REBOOT_OK')) {
+    logLine('RX reiniciando...', 'warn');
     return;
   }
   if (line.startsWith('LED_BRIGHT_OK,')) {
@@ -1122,6 +1139,11 @@ function handleLine(line) {
     handleLoss(line.split(','));
     return;
   }
+  // Diagnostico do radio do RX: eventos de recuperacao automatica e motivo do ultimo reset.
+  if (line.startsWith('RADIO_EVENT,') || line.startsWith('RADIO_DIAG,') || line.startsWith('RESET_REASON,')) {
+    logLine('RX: ' + line, line.startsWith('RADIO_EVENT,') ? 'bad' : 'warn');
+    return;
+  }
   if (line.startsWith('DVS_RX_READY')) {
     logLine('Receptor conectado: ' + line);
     $('infoMsg').textContent = 'Receptor conectado. Telemetria em tempo real.';
@@ -1155,6 +1177,18 @@ function handleLine(line) {
     else logLine('RX: ' + line, 'good');
     return;
   }
+  if (line.startsWith('HEAP,')) {
+    const p = line.split(',');
+    if (p.length >= 3) {
+      const free = parseInt(p[1], 10);
+      const minHeap = parseInt(p[2], 10);
+      const freeKb = (free / 1024).toFixed(1);
+      const minKb = (minHeap / 1024).toFixed(1);
+      logLine('HEAP free=' + freeKb + 'KB min=' + minKb + 'KB', 'info');
+      if (window.Sig) window.Sig.onHeap(free, minHeap);
+    }
+    return;
+  }
   if (line.startsWith('UPTIME deck')) {
     const m = line.match(/UPTIME deck(\d)=(.+)/);
     if (m) {
@@ -1171,6 +1205,41 @@ function handleLine(line) {
       upEl.className = 'value';
       logLine('Tempo conectado deck ' + m[1] + ': ' + val);
     }
+    return;
+  }
+  if (line.startsWith('TIMECODE_OK,')) {
+    const m = parseInt(line.split(',')[1], 10);
+    const names = { 0: 'Serato (CV02)', 1: 'Rekordbox', 2: 'Traktor' };
+    const sel = $('timecodeSelect');
+    const badge = $('timecodeValue');
+    if (!isNaN(m) && names[m]) {
+      if (sel) sel.value = String(m);
+      if (badge) badge.textContent = names[m];
+    }
+    return;
+  }
+  if (line.startsWith('TIMECODE_ERR')) {
+    logLine('RX: ' + line, 'bad');
+    return;
+  }
+  if (line.startsWith('RADIO_STATE,')) {
+    const kv = {};
+    line.substring('RADIO_STATE,'.length).split(',').forEach(pair => {
+      const i = pair.indexOf('=');
+      if (i > 0) kv[pair.slice(0, i).trim()] = pair.slice(i + 1).trim();
+    });
+    const kb = v => { const n = parseInt(v, 10); return isNaN(n) ? '--' : (n / 1024).toFixed(1) + ' KB'; };
+    const upSec = parseInt(kv.uptime, 10);
+    const upStr = isNaN(upSec) ? '--' : (Math.floor(upSec / 3600) + 'h' + String(Math.floor((upSec % 3600) / 60)).padStart(2, '0') + 'm');
+    const modes = { 0: 'NULL', 1: 'STA', 2: 'AP', 3: 'AP+STA' };
+    if ($('radioCh')) $('radioCh').textContent = kv.ch ? ('Canal ' + kv.ch) : '--';
+    if ($('radioTx')) $('radioTx').textContent = kv.tx ? (parseInt(kv.tx, 10) / 4).toFixed(1) + ' dBm (' + kv.tx + ')' : '--';
+    if ($('radioMode')) $('radioMode').textContent = modes[kv.mode] || kv.mode || '--';
+    if ($('radioLr')) $('radioLr').textContent = kv.lr === '1' ? 'Ativo' : 'Desligado';
+    if ($('radioHeap')) $('radioHeap').textContent = kb(kv.heap);
+    if ($('radioMinHeap')) $('radioMinHeap').textContent = kb(kv.minheap);
+    if ($('radioUptime')) $('radioUptime').textContent = upStr;
+    logLine('Rádio: canal ' + kv.ch + ', potência ' + kv.tx + ', heap ' + kb(kv.heap) + ', min ' + kb(kv.minheap));
     return;
   }
   if (line.startsWith('ERR_A') || line.startsWith('ERR_B')) {
@@ -1260,6 +1329,7 @@ window.Sig = (function () {
   const COLORS = ['#58a6ff', '#f0883e'];
 
   let rows, cur, st, g, dirty = false, hoverT = null, drawQueued = false;
+  let heapRows = [];
   const view = {};
 
   const num = (s) => { const v = parseFloat(s); return isNaN(v) ? null : v; };
@@ -1286,12 +1356,18 @@ window.Sig = (function () {
   }
   function reset() {
     rows = []; cur = null; dirty = false;
+    heapRows = [];
     st = [newDeck(), newDeck()];
     g = { startT: null, lastT: null, totalMs: 0, rxReboots: 0, prevRxMs: null, prevT: null };
   }
   reset();
 
   // ---------- coleta ----------
+  function onHeap(free, minHeap) {
+    heapRows.push({ t: Date.now(), free, min: minHeap });
+    if (heapRows.length > 4320) heapRows.splice(0, Math.floor(4320 * 0.1)); // ~15 dias a 1 amostra/5 min
+    scheduleDraw();
+  }
   function onTelem(f) {
     const t = Date.now();
     const rxMs = num(f[1]);
@@ -1386,17 +1462,17 @@ window.Sig = (function () {
   }
 
   // ---------- gráficos ----------
-  function lowerBound(t) {
-    let lo = 0, hi = rows.length;
-    while (lo < hi) { const mid = (lo + hi) >> 1; if (rows[mid].t < t) lo = mid + 1; else hi = mid; }
+  function lowerBound(arr, t) {
+    let lo = 0, hi = arr.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (arr[mid].t < t) lo = mid + 1; else hi = mid; }
     return lo;
   }
-  function nearest(t) {
-    if (!rows.length) return -1;
-    const i = lowerBound(t);
+  function nearest(arr, t) {
+    if (!arr.length) return -1;
+    const i = lowerBound(arr, t);
     if (i <= 0) return 0;
-    if (i >= rows.length) return rows.length - 1;
-    return (t - rows[i - 1].t <= rows[i].t - t) ? i - 1 : i;
+    if (i >= arr.length) return arr.length - 1;
+    return (t - arr[i - 1].t <= arr[i].t - t) ? i - 1 : i;
   }
   function prep(cv) {
     const w = cv.clientWidth, h = cv.clientHeight;
@@ -1426,18 +1502,32 @@ window.Sig = (function () {
     val: (r, d) => r.d[d].loss,
     tip: (r, d) => (r.d[d].loss === null ? '--' : r.d[d].loss + '%')
   };
+  const HEAP_OPTS = {
+    yMin: 0, strips: false, single: true, kb: true, minLine: true,
+    yMax: (i0) => {
+      let m = 0;
+      for (let i = i0; i < heapRows.length; i++) { const v = heapRows[i].free; if (v > m) m = v; }
+      return Math.max(16384, Math.ceil(m * 1.1 / 16384) * 16384); // passo de 16 KB
+    },
+    yStep: (ymax) => (ymax <= 65536 ? 8192 : ymax <= 131072 ? 16384 : 32768),
+    yFmt: (v) => (v / 1024) + 'K',
+    val: (r) => r.free,
+    minVal: (r) => r.min,
+    tip: (r) => (r.free / 1024).toFixed(1) + ' KB'
+  };
 
   function drawChart(id, o) {
     const cv = $(id);
     const s = prep(cv);
     if (!s) return;
     const { ctx, w, h } = s;
+    const data = o.single ? heapRows : rows;
     const L = 46, R = 12, T = 10, B = 28;
     const x0 = L, x1 = w - R, y0 = T, y1 = h - B;
     const win = windowMs();
-    const tEnd = (window.__serialConnected || !rows.length) ? Date.now() : rows[rows.length - 1].t;
+    const tEnd = (window.__serialConnected || !data.length) ? Date.now() : data[data.length - 1].t;
     const tStart = tEnd - win;
-    const i0 = lowerBound(tStart);
+    const i0 = lowerBound(data, tStart);
     const yMin = o.yMin, yMax = o.yMax(i0), yStep = o.yStep(yMax);
     const X = (t) => x0 + (t - tStart) / win * (x1 - x0);
     const Y = (v) => y1 - (v - yMin) / (yMax - yMin) * (y1 - y0);
@@ -1457,7 +1547,7 @@ window.Sig = (function () {
       ctx.fillText(o.yFmt(v), x0 - 6, y);
     }
     // grade vertical + horas reais
-    const steps = [10e3, 30e3, 60e3, 120e3, 300e3, 600e3, 900e3, 1800e3];
+    const steps = [10e3, 30e3, 60e3, 120e3, 300e3, 600e3, 900e3, 1800e3, 3600e3, 7200e3, 14400e3, 28800e3];
     let step = steps[steps.length - 1];
     for (const sv of steps) { if (win / sv <= 8) { step = sv; break; } }
     const off = new Date(tStart).getTimezoneOffset() * 60000;
@@ -1472,10 +1562,10 @@ window.Sig = (function () {
     ctx.strokeStyle = '#30363d';
     ctx.strokeRect(x0 + 0.5, y0 + 0.5, x1 - x0, y1 - y0);
 
-    const vis = rows.length - i0;
+    const vis = data.length - i0;
     if (vis <= 0) {
       ctx.fillStyle = '#6e7681'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText(rows.length ? 'Sem amostras nesta janela.' : 'Sem dados. Conecte ao receptor.', (x0 + x1) / 2, (y0 + y1) / 2);
+      ctx.fillText(data.length ? 'Sem amostras nesta janela.' : 'Sem dados. Conecte ao receptor.', (x0 + x1) / 2, (y0 + y1) / 2);
       return;
     }
 
@@ -1489,22 +1579,45 @@ window.Sig = (function () {
       ctx.setLineDash([]);
     }
 
-    for (let d = 0; d < 2; d++) {
-      ctx.strokeStyle = COLORS[d]; ctx.lineWidth = 1.6; ctx.lineJoin = 'round';
-      ctx.beginPath();
-      let open = false, prevT = 0, prevY = 0;
-      for (let i = Math.max(0, i0 - 1); i < rows.length; i++) {
-        const r = rows[i];
-        const v = o.val(r, d);
-        if (v === null || v === undefined) { open = false; continue; }
-        if (open && r.t - prevT > GAP_MS) open = false;
-        const x = X(r.t), y = Y(Math.min(yMax, Math.max(yMin, v)));
-        if (!open) { ctx.moveTo(x, y); open = true; }
-        else if (o.step) { ctx.lineTo(x, prevY); ctx.lineTo(x, y); }
-        else ctx.lineTo(x, y);
-        prevT = r.t; prevY = y;
+    if (o.single) {
+      // série única (Heap livre) + linha do mínimo já visto (minFreeHeap)
+      const line = (getVal, color, dashed) => {
+        ctx.strokeStyle = color; ctx.lineWidth = 1.6; ctx.lineJoin = 'round';
+        if (dashed) ctx.setLineDash([5, 4]);
+        ctx.beginPath();
+        let open = false, prevT = 0;
+        for (let i = Math.max(0, i0 - 1); i < data.length; i++) {
+          const r = data[i];
+          const v = getVal(r);
+          if (v === null || v === undefined) { open = false; continue; }
+          if (open && r.t - prevT > 6 * 60e3) open = false; // gap > 6 min (1 amostra/5 min)
+          const x = X(r.t), y = Y(Math.min(yMax, Math.max(yMin, v)));
+          if (!open) { ctx.moveTo(x, y); open = true; } else ctx.lineTo(x, y);
+          prevT = r.t;
+        }
+        ctx.stroke();
+        if (dashed) ctx.setLineDash([]);
+      };
+      line((r) => r.min, '#d29922', true);
+      line((r) => r.free, '#3fb950', false);
+    } else {
+      for (let d = 0; d < 2; d++) {
+        ctx.strokeStyle = COLORS[d]; ctx.lineWidth = 1.6; ctx.lineJoin = 'round';
+        ctx.beginPath();
+        let open = false, prevT = 0, prevY = 0;
+        for (let i = Math.max(0, i0 - 1); i < data.length; i++) {
+          const r = data[i];
+          const v = o.val(r, d);
+          if (v === null || v === undefined) { open = false; continue; }
+          if (open && r.t - prevT > GAP_MS) open = false;
+          const x = X(r.t), y = Y(Math.min(yMax, Math.max(yMin, v)));
+          if (!open) { ctx.moveTo(x, y); open = true; }
+          else if (o.step) { ctx.lineTo(x, prevY); ctx.lineTo(x, y); }
+          else ctx.lineTo(x, y);
+          prevT = r.t; prevY = y;
+        }
+        ctx.stroke();
       }
-      ctx.stroke();
     }
 
     if (o.strips) {   // faixas no rodapé: deck desconectado
@@ -1512,8 +1625,8 @@ window.Sig = (function () {
         ctx.fillStyle = COLORS[d];
         let startX = null, lastX = null;
         const flush = () => { if (startX !== null) ctx.fillRect(startX, y1 - 7 + d * 3.5, Math.max(2, lastX - startX), 3); startX = null; };
-        for (let i = Math.max(0, i0 - 1); i < rows.length; i++) {
-          const r = rows[i];
+        for (let i = Math.max(0, i0 - 1); i < data.length; i++) {
+          const r = data[i];
           if (!r.d[d].conn) {
             const xa = X(r.t - 250), xb = X(r.t + 250);
             if (startX === null) startX = xa;
@@ -1526,13 +1639,15 @@ window.Sig = (function () {
     ctx.restore();
 
     if (hoverT !== null && hoverT >= tStart && hoverT <= tEnd) {
-      const j = nearest(hoverT);
+      const j = nearest(data, hoverT);
       if (j >= 0) {
-        const r = rows[j];
+        const r = data[j];
         const x = Math.round(X(r.t)) + 0.5;
         ctx.strokeStyle = '#8b949e'; ctx.lineWidth = 1;
         ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y1); ctx.stroke();
-        const txt = clock(r.t, true) + '   A: ' + o.tip(r, 0) + '   B: ' + o.tip(r, 1);
+        const txt = o.single
+          ? clock(r.t, true) + '   Livre: ' + o.tip(r) + '   Mín: ' + (r.min / 1024).toFixed(1) + ' KB'
+          : clock(r.t, true) + '   A: ' + o.tip(r, 0) + '   B: ' + o.tip(r, 1);
         ctx.font = '12px Consolas, monospace';
         const tw = ctx.measureText(txt).width + 12;
         const bx = Math.min(Math.max(x0 + 4, x + 8), x1 - tw - 4);
@@ -1547,6 +1662,7 @@ window.Sig = (function () {
   function draw() {
     drawChart('chRssi', RSSI_OPTS);
     drawChart('chLoss', LOSS_OPTS);
+    drawChart('chHeap', HEAP_OPTS);
   }
   function scheduleDraw() {
     if (drawQueued || !active()) return;
@@ -1700,6 +1816,7 @@ window.Sig = (function () {
   }
   bindHover('chRssi');
   bindHover('chLoss');
+  bindHover('chHeap');
   $('sigWindow').addEventListener('change', draw);
   $('btnCsv').addEventListener('click', exportCsv);
   $('btnCopySummary').addEventListener('click', copySummary);
@@ -1713,7 +1830,7 @@ window.Sig = (function () {
   function onShow() { draw(); renderSummary(); }
   onShow();
 
-  return { onTelem, onAudio, onLoss, onShow, draw, exportCsv, copySummary, buildCsv, newSession, _debug: () => ({ rows, st, g }) };
+  return { onTelem, onAudio, onLoss, onHeap, onShow, draw, exportCsv, copySummary, buildCsv, newSession, _debug: () => ({ rows, heapRows, st, g }) };
 })();
 
 // ------------------------- SERIAL -------------------------
@@ -1752,10 +1869,11 @@ async function connect() {
     sendSerialCmd('VOLUME');
     sendSerialCmd('DECK_STATUS');
     sendSerialCmd('FADE');
-    sendSerialCmd('TIMECODE');
     sendSerialCmd('FILTER? 1');
     sendSerialCmd('FILTER? 2');
     sendSerialCmd('TX_POWER?');
+    sendSerialCmd('RADIO');
+    sendSerialCmd('TIMECODE');
     readLoop();
   } catch (e) {
     logLine('Falha ao conectar: ' + e.message, 'bad');
@@ -1811,6 +1929,91 @@ window.connect = connect;
 window.disconnect = disconnect;
 window.restartRX = restartRX;
 
+// ------------------------- CANAL WI-FI: SCAN / SELEÇÃO -------------------------
+function startChannelScan() {
+  if (!port) { logLine('Conecte primeiro.', 'bad'); return; }
+  scanNets = [];
+  scanActive = true;
+  if ($('scanList')) $('scanList').innerHTML = '';
+  if ($('scanResult')) $('scanResult').textContent = 'Escaneando canais 2.4 GHz... (pode levar alguns segundos)';
+  logLine('Scan de canais iniciado...');
+  sendSerialCmd('SCAN_ALL');
+  // Timeout de seguranca: se o RX nao responder, nao deixa a UI presa.
+  if (scanTimeoutId) clearTimeout(scanTimeoutId);
+  scanTimeoutId = setTimeout(() => {
+    if (scanActive) {
+      scanActive = false;
+      if ($('scanResult')) $('scanResult').textContent = 'Sem resposta do RX ao scan (timeout). Verifique se o RX foi gravado com SCAN_ALL.';
+      logLine('Scan: timeout sem resposta do RX.', 'bad');
+    }
+  }, 20000);
+}
+
+function renderScanList(total, reportLine) {
+  scanActive = false;
+  if (scanTimeoutId) { clearTimeout(scanTimeoutId); scanTimeoutId = null; }
+  const listEl = $('scanList');
+  const resEl = $('scanResult');
+  if (!listEl || !resEl) return;
+
+  // Agrupa por canal e soma o número de redes (score de ocupação).
+  const perChannel = {};
+  for (const n of scanNets) {
+    if (n.ch < 1 || n.ch > 13) continue;
+    if (!perChannel[n.ch]) perChannel[n.ch] = { count: 0, strongest: -200, ssids: [] };
+    perChannel[n.ch].count++;
+    if (n.rssi > perChannel[n.ch].strongest) perChannel[n.ch].strongest = n.rssi;
+    if (n.ssid) perChannel[n.ch].ssids.push(n.ssid + ' (' + n.rssi + ')');
+  }
+
+  if (scanNets.length === 0) {
+    resEl.textContent = 'Nenhuma rede encontrada. O canal atual pode estar livre.';
+    listEl.innerHTML = '';
+    logLine('Scan: nenhuma rede encontrada.', 'good');
+    return;
+  }
+
+  resEl.textContent = 'Toque em um canal para usar. A quantidade de redes e o sinal mais forte são mostrados; o RX reinicia no canal escolhido.';
+  const channels = [];
+  for (let ch = 1; ch <= 13; ch++) {
+    const info = perChannel[ch] || { count: 0, strongest: null, ssids: [] };
+    channels.push({ ch, count: info.count, strongest: info.strongest, ssids: info.ssids });
+  }
+  // Menos redes primeiro (mais livre); empate mantém ordem de canal.
+  channels.sort((a, b) => (a.count - b.count) || (a.ch - b.ch));
+
+  listEl.innerHTML = channels.map(c => {
+    const occ = c.count === 0 ? 'livre' : (c.count + (c.count === 1 ? ' rede' : ' redes'));
+    const sig = (c.strongest === null) ? '' : (' — mais forte ' + c.strongest + ' dBm');
+    const cls = c.count === 0 ? 'off' : (c.count <= 2 ? 'info' : 'bad');
+    const title = c.ssids.slice(0, 6).join(', ');
+    // Fundo do botao muda de cor conforme a ocupacao do canal.
+    const bg = c.count === 0 ? '#1a7f37' : (c.count <= 2 ? '#2d7a33' : (c.count <= 4 ? '#9e6a03' : '#a6302e'));
+    return '<button class="btn small" data-ch="' + c.ch + '" title="' + title.replace(/"/g, '') + '" ' +
+           'style="text-align:left;justify-content:flex-start;background:' + bg + ';">' +
+           'Canal ' + c.ch + ' — ' + occ + sig +
+           '<span class="badge ' + cls + '" style="margin-left:auto;">' + (c.count === 0 ? 'livre' : c.count) + '</span>' +
+           '</button>';
+  }).join('');
+
+  listEl.querySelectorAll('button[data-ch]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const ch = btn.getAttribute('data-ch');
+      if (!confirm('Mudar o RX para o canal ' + ch + '?\n\nO RX vai reiniciar e os TXs vão perder o link por alguns segundos.')) return;
+      logLine('Enviando CHANNEL ' + ch + ' (RX reinicia)...', 'warn');
+      sendSerialCmd('CHANNEL ' + ch);
+      // O RX reinicia via USB CDC: a porta cai e reaparece. Desconecta
+      // automaticamente para permitir reconectar quando o RX subir.
+      setTimeout(() => { if (typeof disconnect === 'function') disconnect(); }, 1500);
+    });
+  });
+
+  logLine('Scan concluído: ' + scanNets.length + ' rede(s) em ' + channels.filter(c => c.count > 0).length + ' canal(is).');
+  if (reportLine) logLine('RX: ' + reportLine);
+}
+
+window.startChannelScan = startChannelScan;
+
 // ------------------------- UI LISTENERS -------------------------
 // Botão de Tempo conectado removido - uptime agora é atualizado automaticamente
 
@@ -1863,6 +2066,23 @@ function applyTxPower(deck) {
 $('btnTxPowerA').addEventListener('click', () => applyTxPower(1));
 $('btnTxPowerB').addEventListener('click', () => applyTxPower(2));
 
+// Canal Wi-Fi: botão de scan manual
+$('btnScanChannels').addEventListener('click', startChannelScan);
+
+// Estado do rádio: botão de atualização manual
+if ($('btnRadioRefresh')) $('btnRadioRefresh').addEventListener('click', () => {
+  sendSerialCmd('RADIO');
+  logLine('Consultando estado do rádio...');
+});
+
+// Timecode: seletor de modo (Serato/Rekordbox/Traktor)
+if ($('timecodeSelect')) $('timecodeSelect').addEventListener('change', () => {
+  const names = { 0: 'serato', 1: 'rekordbox', 2: 'traktor' };
+  const v = $('timecodeSelect').value;
+  sendSerialCmd('TIMECODE ' + names[v]);
+  logLine('Timecode: ' + names[v] + ' (salvo no RX)', 'warn');
+});
+
 // Fade de início: slider (0-1000ms) enviam ao soltar
 $('fadeInput').addEventListener('input', () => {
   $('fadeValue').textContent = $('fadeInput').value + 'ms';
@@ -1872,41 +2092,6 @@ $('fadeInput').addEventListener('change', () => {
   sendSerialCmd('FADE ' + ms);
   logLine('Fade de início: ' + ms + 'ms');
 });
-
-// Sinal de timecode (Serato/Rekordbox/Traktor): envia a escolha ao RX (salva em NVS).
-$('btnApplyTc').addEventListener('click', () => {
-  const v = $('tcModeSelect').value;
-  const cmd = v === '1' ? 'rekordbox' : (v === '2' ? 'traktor' : 'serato');
-  const name = v === '1' ? 'Rekordbox' : (v === '2' ? 'Traktor MK2' : 'Serato (CV02)');
-  sendSerialCmd('TIMECODE ' + cmd);
-  logLine('Timecode selecionado: ' + name);
-});
-
-// ------------------------- DIAGNÓSTICO DE CANAL -------------------------
-let scanNets = [];
-let scanTimer = null;
-
-function runChannelScan() {
-  if (!port) { logLine('Conecte primeiro.', 'bad'); return; }
-  scanNets = [];
-  $('scanList').textContent = '';
-  $('scanResult').textContent = 'Varrendo... (o RX sai do canal por ~1 s e volta em seguida)';
-  $('scanStatus').textContent = 'Executando...';
-  $('scanStatus').style.color = '#8b949e';
-  $('btnScan').disabled = true;
-  sendSerialCmd('SCAN_REPORT');
-  clearTimeout(scanTimer);
-  scanTimer = setTimeout(() => {
-    $('btnScan').disabled = false;
-    if ($('scanStatus').textContent === 'Executando...') {
-      $('scanStatus').textContent = 'Sem resposta';
-      $('scanStatus').style.color = '#f85149';
-      $('scanResult').textContent = 'O RX não respondeu ao scan (timeout). Verifique a conexão.';
-    }
-  }, 15000);
-}
-
-$('btnScan').addEventListener('click', runChannelScan);
 </script>
 </body>
 </html>

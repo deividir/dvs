@@ -36,8 +36,8 @@
 #define DAC_B_LRCK_PIN  14
 #define DAC_B_DATA_PIN  13
 
-#define ESPNOW_CHANNEL 11  // canal fixo de teste
-#define FORCE_FIXED_CHANNEL 1  // 1 = ignora scan/NVS durante o teste; 0 = usa a logica original
+#define ESPNOW_CHANNEL 11  // canal padrao/fallback
+#define FORCE_FIXED_CHANNEL 0  // 0 = usa NVS/scan (recomendado); 1 = forca ESPNOW_CHANNEL (teste)
 #define USE_LONG_RANGE 0  // modo normal: menor tempo no ar e melhor para alta taxa de pacotes
 // OBS: long range usa WIFI_PROTOCOL_LR (1Mbps, amplia sensibilidade/alcsencia);
 // o custo e mais trafego de ar por pacote. Funciona apenas se TODOS os modulos
@@ -57,13 +57,13 @@
 #define CFG_ALPHA_FAST 3
 #define CFG_FAST_THRESHOLD 4
 #define CFG_TX_POWER 5
-#define PING_INTERVAL_MS 500
+#define PING_INTERVAL_MS 1000
 #define DECK_TIMEOUT_MS 2500
 #define RX_BOOT_ID 0x5A
 
 #define DEBUG_SERIAL 1
 #define DEBUG_BAUD 115200
-#define DEBUG_PRINT_INTERVAL_MS 500
+#define DEBUG_PRINT_INTERVAL_MS 1000
 
 #define SAMPLE_RATE 44100
 #define DMA_BUF_LEN 32
@@ -242,8 +242,9 @@ uint32_t lastDebugPrintMillis = 0;
 int16_t sinTable[SIN_COS_TABLE_SIZE];
 int16_t cosTable[SIN_COS_TABLE_SIZE];
 
-// Brilho dos LEDs de deck (0-100%, PWM via ledc). Default 100 = comportamento atual.
-uint8_t ledBrightness = 100;
+// Fases de timecode para quando ficar parado
+static uint32_t stoppedAtMillis[2] = {0, 0};
+static bool wasStoppedFlag[2] = {false, false};
 // true quando o pino foi configurado com sucesso via ledcAttach (PWM de brilho).
 bool ledPwmOk[2] = {false, false};
 
@@ -442,6 +443,9 @@ void saveLedBrightnessNvs(uint8_t b) {
   prefs.end();
 }
 
+// Brilho dos LEDs de deck em RAM (persistido em NVS)
+uint8_t ledBrightness = 100;
+
 // Fade de inicio (ms) persistido em NVS: sobrevive a reboots.
 uint16_t loadStartFadeNvs() {
   Preferences prefs;
@@ -573,6 +577,10 @@ void selectCleanChannel(bool force = false) {
   return;
 #endif
   if (!force) {
+    // Boot normal: nunca faz scan. Usa o canal salvo em NVS; se nao houver,
+    // grava o canal padrao (ESPNOW_CHANNEL) e segue. A escolha de canal e
+    // manual pelo dashboard (comando SCAN/CHANNEL), evitando scan automatico
+    // no boot (fonte de fragmentacao de heap e travamento).
     int saved = loadChannelNvs();
     if (saved >= 1 && saved <= 13) {
       activeEspNowChannel = (uint8_t)saved;
@@ -581,6 +589,12 @@ void selectCleanChannel(bool force = false) {
       Serial.printf("RF_CHANNEL,%d (salvo em NVS)\n", activeEspNowChannel);
       return;
     }
+    activeEspNowChannel = ESPNOW_CHANNEL;
+    saveChannelNvs(activeEspNowChannel);
+    WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);
+    Serial.printf("RF_CHANNEL,%d (padrao; sem scan no boot)\n", activeEspNowChannel);
+    return;
   }
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
@@ -588,6 +602,7 @@ void selectCleanChannel(bool force = false) {
   int found = WiFi.scanNetworks();
   if (found <= 0) {
     Serial.println("SCAN: nenhuma rede encontrada, mantendo canal padrao");
+    WiFi.scanDelete();
     saveChannelNvs(activeEspNowChannel);
     Serial.printf("RF_CHANNEL,%d\n", activeEspNowChannel);
     return;
@@ -610,6 +625,7 @@ void selectCleanChannel(bool force = false) {
     }
   }
   if (force) Serial.printf("SCAN_DONE,%d\n", found);
+  WiFi.scanDelete();
   static const uint8_t prefOrder[13] = {12, 13, 1, 6, 11, 2, 7, 3, 8, 4, 9, 5, 10};
   uint8_t best = ESPNOW_CHANNEL;
   float bestScore = 1e9f;
@@ -652,6 +668,59 @@ void scanDiagnostic() {
   }
   Serial.printf("SCAN_REPORT,active=%u,same=%d,total=%d\n", (unsigned)active, same, found);
   WiFi.scanDelete();
+  applyChannelToRadio();
+#endif
+}
+
+// Scan somente-leitura de TODOS os canais (comando SCAN_ALL): lista as redes de
+// 1..13 via SCAN_NET e termina com SCAN_DONE. NAO troca de canal, NAO grava NVS
+// e NAO mexe nos peers. Usado pelo dashboard para o usuario escolher o canal
+// manualmente (depois via CHANNEL <n>, que reinicia o RX no canal novo).
+void scanAllChannels() {
+#if USE_LONG_RANGE
+  Serial.println("SCAN_ERR: varredura indisponivel em Long Range");
+  return;
+#else
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);
+  Serial.println("SCAN_ALL: varrendo 1..13...");
+  // Varredura ASSINCRONA: nao prende o loop/ESP-NOW. Espera o fim com timeout
+  // de seguranca; sem isso, o scan bloqueante com ESP-NOW ativo podia nao
+  // completar e o SCAN_DONE nunca saia.
+  int found = WiFi.scanNetworks(true, false, false, 120);
+  if (found == WIFI_SCAN_FAILED) {
+    Serial.println("SCAN_ERR: falha ao iniciar varredura");
+    return;
+  }
+  uint32_t scanStart = millis();
+  while (WiFi.scanComplete() == WIFI_SCAN_RUNNING) {
+    if (millis() - scanStart > 15000) {
+      WiFi.scanDelete();
+      Serial.println("SCAN_ERR: timeout na varredura");
+      applyChannelToRadio();
+      return;
+    }
+    delay(50);
+  }
+  found = WiFi.scanComplete();
+  if (found < 0) {
+    WiFi.scanDelete();
+    Serial.println("SCAN_ERR: falha na varredura");
+    applyChannelToRadio();
+    return;
+  }
+  for (int i = 0; i < found; i++) {
+    int ch = WiFi.channel(i);
+    if (ch < 1 || ch > 13) continue;
+    String ssid = WiFi.SSID(i);
+    ssid.replace('|', '_');
+    ssid.replace('\n', ' ');
+    ssid.replace('\r', ' ');
+    Serial.printf("SCAN_NET|%d|%d|%d|%s\n", ch, WiFi.RSSI(i), WiFi.encryptionType(i), ssid.c_str());
+  }
+  Serial.printf("SCAN_DONE,%d\n", found);
+  WiFi.scanDelete();
+  // Reposiciona o radio no canal de operacao (a varredura saiu dele).
   applyChannelToRadio();
 #endif
 }
@@ -750,15 +819,32 @@ float readTargetRpm(uint8_t deckId) { uint8_t deckIndex = deckId <= 1 ? 0 : 1; i
 void audioTask(void *param) { audio_deck_state *deck = (audio_deck_state *)param; int16_t buffer[DMA_BUF_LEN * 2]; uint8_t deckIdx = deck->deckId - 1; uint32_t lastWriteUs = micros(); uint32_t qFrames = DMA_TOTAL_FRAMES; while (true) {
     float targetRpm = readTargetRpm(deck->deckId);
     bool below = (fabsf(targetRpm) < CALIB_THRESHOLD_RPM);
-    bool stopped;
+    bool stoppedNow;
     if (below) {
       if (deck->stopCandidateStart == 0) deck->stopCandidateStart = millis();
-      stopped = (millis() - deck->stopCandidateStart >= STOP_DEBOUNCE_MS);
+      stoppedNow = (millis() - deck->stopCandidateStart >= STOP_DEBOUNCE_MS);
     } else {
       deck->stopCandidateStart = 0;
-      stopped = false;
+      stoppedNow = false;
     }
-    if (stopped) {
+
+    // Reset de fase para lead-in (~0:15) após 15s parado
+    if (stoppedNow) {
+      if (!wasStoppedFlag[deckIdx]) {
+        stoppedAtMillis[deckIdx] = millis();
+        wasStoppedFlag[deckIdx] = true;
+      }
+      if (millis() - stoppedAtMillis[deckIdx] >= 15000) {
+        // Sem reset de fase: reposicionar o timecode faz o Serato reiniciar a
+        // musica. A fase congelada com pitch=0 ja e tratada como "vinil parado".
+        // Este bloco so mantem o throttle para nao disparar a cada ciclo.
+        stoppedAtMillis[deckIdx] = millis() + 10000;
+      }
+    } else {
+      wasStoppedFlag[deckIdx] = false;
+    }
+
+    if (stoppedNow) {
       deck->calibrating = true;
       deck->calibStableStart = 0;
       deck->filteredRpm = 0.0f;
@@ -770,7 +856,7 @@ void audioTask(void *param) { audio_deck_state *deck = (audio_deck_state *)param
       float alpha = (fabsf(delta) > 2.5f) ? 0.8f : RPM_SMOOTHING;
       deck->filteredRpm += delta * alpha;
     }
-    for (int i = 0; i < DMA_BUF_LEN; i++) { int16_t left, right; if (millis() < deck->testToneUntil) { deck->tonePhase += (uint32_t)((float)deck->testToneFreqHz * 65536.0f / SAMPLE_RATE); int16_t tone = (int16_t)((float)sinTable[(deck->tonePhase >> 6) & (SIN_COS_TABLE_SIZE - 1)] * TEST_TONE_AMPLITUDE); left = tone; right = tone; } else if (stopped) { left = 0; right = 0; } else { renderTimecodeSample(deck, deck->filteredRpm, &left, &right); } buffer[i * 2] = left; buffer[i * 2 + 1] = right; }
+    for (int i = 0; i < DMA_BUF_LEN; i++) { int16_t left, right; if (millis() < deck->testToneUntil) { deck->tonePhase += (uint32_t)((float)deck->testToneFreqHz * 65536.0f / SAMPLE_RATE); int16_t tone = (int16_t)((float)sinTable[(deck->tonePhase >> 6) & (SIN_COS_TABLE_SIZE - 1)] * TEST_TONE_AMPLITUDE); left = tone; right = tone; } else if (stoppedNow) { left = 0; right = 0; } else { renderTimecodeSample(deck, deck->filteredRpm, &left, &right); } buffer[i * 2] = left; buffer[i * 2 + 1] = right; }
     // Volume do deck + fade de inicio (envelope 0->1 em START_FADE_MS).
     float fadeGain = 1.0f;
     if (deck->fadeStartMillis && gStartFadeMs > 0) {
@@ -886,15 +972,27 @@ void handleSerialCommand() {
             applyChannelToRadio();
             saveChannelNvs((uint8_t)ch);
             Serial.printf("RF_CHANNEL,%d\n", activeEspNowChannel);
+            // Reinicia o RX para subir no novo canal com heap limpo do scan.
+            // O dashboard trata CHANNEL_REBOOT para marcar a desconexao esperada.
+            Serial.printf("CHANNEL_REBOOT,%d\n", activeEspNowChannel);
+            delay(200);
+            ESP.restart();
           } else {
             Serial.println("CHANNEL_ERR: use 1-13");
           }
         }
       } else if (cmdLine.equals("SCAN_REPORT")) {
         scanDiagnostic();
+      } else if (cmdLine.equals("SCAN_ALL")) {
+        scanAllChannels();
       } else if (cmdLine.equals("SCAN")) {
         selectCleanChannel(true);
         applyChannelToRadio();
+      } else if (cmdLine.equals("REBOOT")) {
+        // Reinicia o RX a pedido do dashboard (mesmo canal; sem scan no boot).
+        Serial.println("REBOOT_OK");
+        delay(200);
+        ESP.restart();
       } else if (cmdLine.startsWith("DECK_ID")) {
         int fromSlot = cmdLine.substring(8).toInt();
         int toId = 0;
@@ -915,6 +1013,15 @@ void handleSerialCommand() {
           portEXIT_CRITICAL(&stateMux);
           Serial.printf("DECK_STATUS slot=%u online=%u deckId=%u\n", d, (last != 0) ? 1 : 0, d);
         }
+      } else if (cmdLine.startsWith("RADIO")) {
+        // Resumo do estado do radio para o dashboard.
+        int8_t txPower = 0;
+        esp_wifi_get_max_tx_power(&txPower);
+        Serial.printf("RADIO_STATE,ch=%u,tx=%d,mode=%d,lr=%d,heap=%lu,minheap=%lu,uptime=%lu\n",
+                      (unsigned)activeEspNowChannel, (int)txPower, (int)WiFi.getMode(),
+                      USE_LONG_RANGE ? 1 : 0,
+                      (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMinFreeHeap(),
+                      (unsigned long)(millis() / 1000));
       } else if (cmdLine.startsWith("FILTER?")) {
         // Leitura dos filtros vigentes nos TX: encaminha MSG_CFG_GET ao(s) deck(s).
         // CFG_ACK retorna (3 por deck) e ja e impresso no serial para o dashboard.
@@ -1221,9 +1328,9 @@ void setup() {
     i2s_zero_dma_buffer(audioDecks[i].port);
   }
 #endif
-  xTaskCreatePinnedToCore(audioTask, audioDecks[0].taskName, 8192, &audioDecks[0], 3, NULL, 1);
+  xTaskCreatePinnedToCore(audioTask, audioDecks[0].taskName, 10240, &audioDecks[0], 3, NULL, 1);
 #if !SOLO_DECK_A
-  xTaskCreatePinnedToCore(audioTask, audioDecks[1].taskName, 8192, &audioDecks[1], 3, NULL, 1);
+  xTaskCreatePinnedToCore(audioTask, audioDecks[1].taskName, 10240, &audioDecks[1], 3, NULL, 1);
 #endif
 }
 
@@ -1231,6 +1338,15 @@ void loop() {
   handleSerialCommand();
   serviceEspNowControl();
   sendTelemetry();
+
+  // Monitor de heap para acompanhar fragmentação ao longo de horas
+  static uint32_t lastHeap = 0;
+  if (millis() - lastHeap >= 300000) { // 5 minutos
+    lastHeap = millis();
+    Serial.printf("HEAP,%lu,%lu\n",
+                  (unsigned long)ESP.getFreeHeap(),
+                  (unsigned long)ESP.getMinFreeHeap());
+  }
 
   // Controle dos LEDs Azul (solido = ok, piscando = sinal fraco/perda, apagado = sem deck)
   updateDeckLed(0, LED_DECK_A);
